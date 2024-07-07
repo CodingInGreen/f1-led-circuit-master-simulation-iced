@@ -220,7 +220,7 @@ impl Application for Race {
     }
 
     fn theme(&self) -> Theme {
-        Theme::Dark
+        Theme::Light
     }
 }
 
@@ -277,7 +277,7 @@ impl<Message> Program<Message> for Graph {
                     .iter()
                     .find(|(num, _)| *num == led.led_number)
                     .map(|(_, col)| Color::from_rgb8(col.0, col.1, col.2))
-                    .unwrap_or(Color::from_rgb(0.0, 1.0, 0.0));
+                    .unwrap_or(Color::from_rgb(0.0, 0.0, 0.0));
 
                 let point = Path::rectangle(Point::new(x, y), Size::new(10.0, 10.0));
                 frame.fill(&point, color);
