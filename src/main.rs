@@ -158,6 +158,20 @@ impl Application for Race {
     }
 
     fn view(&self) -> Element<Message> {
+        if let State::Fetching = self.state {
+            return container(
+                text("DOWNLOADING DATA...")
+                    .size(50)
+                    .horizontal_alignment(alignment::Horizontal::Center)
+                    .vertical_alignment(alignment::Vertical::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .into();
+        }
+
         const MINUTE: u64 = 60;
         const HOUR: u64 = 60 * MINUTE;
 
@@ -321,7 +335,6 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
                 }
             }
         }
-        sleep(Duration::from_millis(1050)).await;
     }
 
     // Sort the data by the date field
@@ -376,6 +389,6 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
 }
 
 async fn sleep_and_fetch_next(client: Client, driver_numbers: Vec<u32>, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
-    sleep(Duration::from_millis(1050)).await;
+    sleep(Duration::from_millis(331)).await;
     fetch_driver_data(client, driver_numbers, 0, drivers_per_batch, entries_per_driver).await
 }
