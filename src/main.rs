@@ -3,9 +3,10 @@ use iced::executor;
 use iced::keyboard;
 use iced::theme::{self, Theme};
 use iced::time;
-use iced::widget::{button, container, row, text};
+use iced::widget::{button, container, row, text, column};
 use iced::{
     Alignment, Application, Command, Element, Length, Settings, Subscription,
+    widget::canvas::{self, Canvas, Path, Frame, Program}, Color, Point, Size, mouse, Renderer
 };
 
 use std::time::{Duration, Instant};
@@ -147,7 +148,11 @@ impl Application for Stopwatch {
         .align_items(Alignment::Center)
         .spacing(20);
 
-        container(content)
+        let canvas = Canvas::new(RedRectangle)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        container(column![canvas, content])
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(alignment::Horizontal::Left)
@@ -158,5 +163,28 @@ impl Application for Stopwatch {
 
     fn theme(&self) -> Theme {
         Theme::Dark
+    }
+}
+
+struct RedRectangle;
+
+impl<Message> Program<Message> for RedRectangle {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        _renderer: &Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(_renderer, bounds.size());
+
+        // Draw a 20px by 20px red rectangle at (0, 0)
+        let rect = Path::rectangle(Point::new(0.0, 0.0), Size::new(20.0, 20.0));
+        frame.fill(&rect, Color::from_rgb(1.0, 0.0, 0.0));
+
+        vec![frame.into_geometry()]
     }
 }
