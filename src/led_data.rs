@@ -5,7 +5,7 @@ pub struct LedCoordinate {
     pub led_number: u32,
 }
 
-#[derive(Clone)]
+#[derive(Debug,Clone)]
 pub struct UpdateFrame {
     pub timestamp: u64,
     pub led_states: Vec<(u32, (u8, u8, u8))>,

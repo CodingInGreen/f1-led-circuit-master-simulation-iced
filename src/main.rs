@@ -10,17 +10,31 @@ use iced::{
     Alignment, Application, Command, Element, Length, Settings, Subscription,
     widget::canvas::{self, Canvas, Path, Frame, Program}, Color, Point, Size, mouse, Renderer
 };
-
+use reqwest::Client;
+use serde::Deserialize;
 use std::time::{Duration, Instant};
 use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
 use driver_info::DRIVERS;
 use std::f32;
-use std::fs::File;
-use std::io::BufReader;
-use csv::Reader;
+use tokio::runtime::Runtime;
+use chrono::DateTime;
+use std::error::Error as StdError;
+
+#[derive(Debug, Deserialize)]
+struct LocationData {
+    x: f32,
+    y: f32,
+    date: String,
+    driver_number: u32,
+}
 
 pub fn main() -> iced::Result {
-    Race::run(Settings::default())
+    let rt = Runtime::new().unwrap();
+    let update_frames = rt.block_on(fetch_data()).unwrap_or_default();
+    Race::run(Settings {
+        flags: update_frames,
+        ..Settings::default()
+    })
 }
 
 struct Race {
@@ -48,11 +62,9 @@ impl Application for Race {
     type Message = Message;
     type Theme = Theme;
     type Executor = executor::Default;
-    type Flags = ();
+    type Flags = Vec<UpdateFrame>;
 
-    fn new(_flags: ()) -> (Race, Command<Message>) {
-        let update_frames = load_update_frames("processed_100k.csv");
-
+    fn new(update_frames: Vec<UpdateFrame>) -> (Race, Command<Message>) {
         (
             Race {
                 duration: Duration::default(),
@@ -249,87 +261,77 @@ impl<Message> Program<Message> for Graph {
     }
 }
 
-fn load_update_frames(file_path: &str) -> Vec<UpdateFrame> {
-    let file = File::open(file_path).expect("Unable to open file");
-    let mut rdr = Reader::from_reader(BufReader::new(file));
+async fn fetch_data() -> Result<Vec<UpdateFrame>, Box<dyn std::error::Error>> {
+    let session_key = "9149";
+    let driver_numbers = vec![
+        1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
+    ];
+    let start_time: &str = "2023-08-27T12:58:56.200";
+    let end_time: &str = "2023-08-27T13:20:54.300";
+
+    let client = Client::new();
+    let mut all_data: Vec<LocationData> = Vec::new();
+
+    for driver_number in driver_numbers {
+        let url = format!(
+            "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
+            session_key, driver_number, start_time, end_time,
+        );
+        eprintln!("url: {}", url);
+        let resp = client.get(&url).send().await?;
+        if resp.status().is_success() {
+            let data: Vec<LocationData> = resp.json().await?;
+            all_data.extend(data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0));
+        } else {
+            eprintln!(
+                "Failed to fetch data for driver {}: HTTP {}",
+                driver_number,
+                resp.status()
+            );
+        }
+    }
+
+    // Sort the data by the date field
+    all_data.sort_by_key(|d| d.date.clone());
 
     let mut update_frames = Vec::new();
     let mut current_frame: Option<UpdateFrame> = None;
 
-    for result in rdr.records() {
-        match result {
-            Ok(record) => {
-                let timestamp: u64 = match record.get(2).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp_millis() as u64)) {
-                    Some(t) => t,
-                    None => {
-                        eprintln!("Invalid timestamp: {:?}", record.get(2));
-                        continue;
-                    }
-                };
+    for data in all_data {
+        let timestamp = DateTime::parse_from_rfc3339(&data.date)?.timestamp_millis() as u64;
+        let x = data.x;
+        let y = data.y;
+        let driver_number = data.driver_number;
 
-                let x: f32 = match record.get(0).and_then(|s| s.parse().ok()) {
-                    Some(n) => n,
-                    None => {
-                        eprintln!("Invalid x coordinate: {:?}", record.get(0));
-                        continue;
-                    }
-                };
-
-                let y: f32 = match record.get(1).and_then(|s| s.parse().ok()) {
-                    Some(n) => n,
-                    None => {
-                        eprintln!("Invalid y coordinate: {:?}", record.get(1));
-                        continue;
-                    }
-                };
-
-                // Ignore rows with (0, 0) coordinates
-                if x == 0.0 && y == 0.0 {
-                    continue;
-                }
-
-                let driver_number: u32 = match record.get(3).and_then(|s| s.parse().ok()) {
-                    Some(n) => n,
-                    None => {
-                        eprintln!("Invalid driver number: {:?}", record.get(3));
-                        continue;
-                    }
-                };
-
-                let driver = match DRIVERS.iter().find(|d| d.number == driver_number) {
-                    Some(d) => d,
-                    None => {
-                        eprintln!("Driver not found for number: {}", driver_number);
-                        continue;
-                    }
-                };
-
-                let color = driver.color;
-
-                let nearest_led = LED_DATA.iter()
-                    .min_by(|a, b| {
-                        let dist_a = ((a.x_led - x).powi(2) + (a.y_led - y).powi(2)).sqrt();
-                        let dist_b = ((b.x_led - x).powi(2) + (b.y_led - y).powi(2)).sqrt();
-                        dist_a.partial_cmp(&dist_b).unwrap()
-                    })
-                    .unwrap();
-
-                if let Some(frame) = &mut current_frame {
-                    if frame.timestamp == timestamp {
-                        frame.set_led_state(nearest_led.led_number, color);
-                    } else {
-                        update_frames.push(frame.clone());
-                        current_frame = Some(UpdateFrame::new(timestamp));
-                        current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
-                    }
-                } else {
-                    current_frame = Some(UpdateFrame::new(timestamp));
-                    current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
-                }
+        let driver = match DRIVERS.iter().find(|d| d.number == driver_number) {
+            Some(d) => d,
+            None => {
+                eprintln!("Driver not found for number: {}", driver_number);
+                continue;
             }
-            Err(e) => {
-                eprintln!("Error reading record: {}", e);
+        };
+
+        let color = driver.color;
+
+        let nearest_led = LED_DATA.iter()
+            .min_by(|a, b| {
+                let dist_a = ((a.x_led - x).powi(2) + (a.y_led - y).powi(2)).sqrt();
+                let dist_b = ((b.x_led - x).powi(2) + (b.y_led - y).powi(2)).sqrt();
+                dist_a.partial_cmp(&dist_b).unwrap()
+            })
+            .unwrap();
+
+        if let Some(frame) = &mut current_frame {
+            if frame.timestamp == timestamp {
+                frame.set_led_state(nearest_led.led_number, color);
+            } else {
+                update_frames.push(frame.clone());
+                current_frame = Some(UpdateFrame::new(timestamp));
+                current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
             }
+        } else {
+            current_frame = Some(UpdateFrame::new(timestamp));
+            current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
         }
     }
 
@@ -337,7 +339,7 @@ fn load_update_frames(file_path: &str) -> Vec<UpdateFrame> {
         update_frames.push(frame);
     }
 
-    update_frames
+    Ok(update_frames)
 }
 
 
