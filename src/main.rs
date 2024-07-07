@@ -3,7 +3,7 @@ use iced::executor;
 use iced::keyboard;
 use iced::theme::{self, Theme};
 use iced::time;
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{button, container, row, text};
 use iced::{
     Alignment, Application, Command, Element, Length, Settings, Subscription,
 };
@@ -150,7 +150,7 @@ impl Application for Stopwatch {
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .center_x()
+            .align_x(alignment::Horizontal::Left)
             .align_y(alignment::Vertical::Top)
             .padding(20)
             .into()
