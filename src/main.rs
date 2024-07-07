@@ -16,9 +16,7 @@ use std::time::{Duration, Instant};
 use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
 use driver_info::DRIVERS;
 use std::f32;
-use tokio::runtime::Runtime;
 use chrono::DateTime;
-use std::error::Error as StdError;
 
 #[derive(Debug, Deserialize)]
 struct LocationData {
@@ -29,12 +27,7 @@ struct LocationData {
 }
 
 pub fn main() -> iced::Result {
-    let rt = Runtime::new().unwrap();
-    let update_frames = rt.block_on(fetch_data()).unwrap_or_default();
-    Race::run(Settings {
-        flags: update_frames,
-        ..Settings::default()
-    })
+    Race::run(Settings::default())
 }
 
 struct Race {
@@ -43,10 +36,13 @@ struct Race {
     blink_state: bool,
     update_frames: Vec<UpdateFrame>,
     current_frame_index: usize,
+    client: Client,
+    driver_numbers: Vec<u32>,
 }
 
 enum State {
     Idle,
+    Fetching,
     Ticking { last_tick: Instant },
 }
 
@@ -56,22 +52,28 @@ enum Message {
     Reset,
     Tick(Instant),
     Blink,
+    FetchNextDriver,
+    DataFetched(Result<Vec<UpdateFrame>, String>),
 }
 
 impl Application for Race {
     type Message = Message;
     type Theme = Theme;
     type Executor = executor::Default;
-    type Flags = Vec<UpdateFrame>;
+    type Flags = ();
 
-    fn new(update_frames: Vec<UpdateFrame>) -> (Race, Command<Message>) {
+    fn new(_flags: ()) -> (Race, Command<Message>) {
         (
             Race {
                 duration: Duration::default(),
                 state: State::Idle,
                 blink_state: false,
-                update_frames,
+                update_frames: vec![],
                 current_frame_index: 0,
+                client: Client::new(),
+                driver_numbers: vec![
+                    1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
+                ],
             },
             Command::none(),
         )
@@ -85,9 +87,14 @@ impl Application for Race {
         match message {
             Message::Toggle => match self.state {
                 State::Idle => {
-                    self.state = State::Ticking {
-                        last_tick: Instant::now(),
-                    };
+                    self.state = State::Fetching;
+                    self.update_frames.clear();
+                    self.current_frame_index = 0;
+                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), 0), Message::DataFetched);
+                }
+                State::Fetching => {
+                    self.state = State::Idle;
+                    self.blink_state = false;
                 }
                 State::Ticking { .. } => {
                     self.state = State::Idle;
@@ -106,9 +113,28 @@ impl Application for Race {
                 self.current_frame_index = 0;
             }
             Message::Blink => {
-                self.blink_state = !self.blink_state;
-                self.current_frame_index = (self.current_frame_index + 1) % self.update_frames.len();
+                if !self.update_frames.is_empty() {
+                    self.blink_state = !self.blink_state;
+                    self.current_frame_index = (self.current_frame_index + 1) % self.update_frames.len();
+                }
             }
+            Message::DataFetched(Ok(new_frames)) => {
+                self.update_frames.extend(new_frames);
+                if !self.update_frames.is_empty() {
+                    self.state = State::Ticking {
+                        last_tick: Instant::now(),
+                    };
+                } else {
+                    self.state = State::Idle;
+                }
+                if (self.update_frames.len() / 20) < self.driver_numbers.len() {
+                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), self.update_frames.len() / 20), Message::DataFetched);
+                }
+            }
+            Message::DataFetched(Err(_)) => {
+                self.state = State::Idle;
+            }
+            _ => {}
         }
 
         Command::none()
@@ -116,14 +142,14 @@ impl Application for Race {
 
     fn subscription(&self) -> Subscription<Message> {
         let tick = match self.state {
-            State::Idle => Subscription::none(),
+            State::Idle | State::Fetching => Subscription::none(),
             State::Ticking { .. } => {
                 time::every(Duration::from_millis(10)).map(Message::Tick)
             }
         };
 
         let blink = match self.state {
-            State::Idle => Subscription::none(),
+            State::Idle | State::Fetching => Subscription::none(),
             State::Ticking { .. } => {
                 time::every(Duration::from_millis(100)).map(|_| Message::Blink)
             }
@@ -157,7 +183,7 @@ impl Application for Race {
 
         let toggle_button = {
             let label = match self.state {
-                State::Idle => "Start",
+                State::Idle | State::Fetching => "Start",
                 State::Ticking { .. } => "Stop",
             };
 
@@ -240,47 +266,45 @@ impl<Message> Program<Message> for Graph {
         let scale_y = (bounds.height - 2.0 * padding) / height;
 
         // Draw the LED rectangles
-        let frame_data = &self.update_frames[self.current_frame_index];
+        if !self.update_frames.is_empty() {
+            let frame_data = &self.update_frames[self.current_frame_index];
 
-        for led in &self.data {
-            let x = (led.x_led - min_x) * scale_x + padding;
-            let y = bounds.height - (led.y_led - min_y) * scale_y - padding;
+            for led in &self.data {
+                let x = (led.x_led - min_x) * scale_x + padding;
+                let y = bounds.height - (led.y_led - min_y) * scale_y - padding;
 
-            let color = frame_data
-                .led_states
-                .iter()
-                .find(|(num, _)| *num == led.led_number)
-                .map(|(_, col)| Color::from_rgb8(col.0, col.1, col.2))
-                .unwrap_or(Color::from_rgb(0.0, 1.0, 0.0));
+                let color = frame_data
+                    .led_states
+                    .iter()
+                    .find(|(num, _)| *num == led.led_number)
+                    .map(|(_, col)| Color::from_rgb8(col.0, col.1, col.2))
+                    .unwrap_or(Color::from_rgb(0.0, 1.0, 0.0));
 
-            let point = Path::rectangle(Point::new(x, y), Size::new(10.0, 10.0));
-            frame.fill(&point, color);
+                let point = Path::rectangle(Point::new(x, y), Size::new(10.0, 10.0));
+                frame.fill(&point, color);
+            }
         }
 
         vec![frame.into_geometry()]
     }
 }
 
-async fn fetch_data() -> Result<Vec<UpdateFrame>, Box<dyn std::error::Error>> {
+async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index: usize) -> Result<Vec<UpdateFrame>, String> {
     let session_key = "9149";
-    let driver_numbers = vec![
-        1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
-    ];
     let start_time: &str = "2023-08-27T12:58:56.200";
     let end_time: &str = "2023-08-27T13:20:54.300";
 
-    let client = Client::new();
     let mut all_data: Vec<LocationData> = Vec::new();
 
-    for driver_number in driver_numbers {
+    for driver_number in &driver_numbers[start_index..start_index + 1] {
         let url = format!(
             "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
             session_key, driver_number, start_time, end_time,
         );
         eprintln!("url: {}", url);
-        let resp = client.get(&url).send().await?;
+        let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
         if resp.status().is_success() {
-            let data: Vec<LocationData> = resp.json().await?;
+            let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
             all_data.extend(data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0));
         } else {
             eprintln!(
@@ -298,7 +322,7 @@ async fn fetch_data() -> Result<Vec<UpdateFrame>, Box<dyn std::error::Error>> {
     let mut current_frame: Option<UpdateFrame> = None;
 
     for data in all_data {
-        let timestamp = DateTime::parse_from_rfc3339(&data.date)?.timestamp_millis() as u64;
+        let timestamp = DateTime::parse_from_rfc3339(&data.date).map_err(|e| e.to_string())?.timestamp_millis() as u64;
         let x = data.x;
         let y = data.y;
         let driver_number = data.driver_number;
@@ -341,5 +365,3 @@ async fn fetch_data() -> Result<Vec<UpdateFrame>, Box<dyn std::error::Error>> {
 
     Ok(update_frames)
 }
-
-
