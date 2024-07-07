@@ -14,6 +14,7 @@ use iced::{
 use std::time::{Duration, Instant};
 use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
 use driver_info::DRIVERS;
+use std::f32;
 use std::fs::File;
 use std::io::BufReader;
 use csv::Reader;
@@ -266,10 +267,18 @@ fn load_update_frames(file_path: &str) -> Vec<UpdateFrame> {
                     }
                 };
 
-                let led_number: u32 = match record.get(4).and_then(|s| s.parse().ok()) {
+                let x: f32 = match record.get(0).and_then(|s| s.parse().ok()) {
                     Some(n) => n,
                     None => {
-                        eprintln!("Invalid LED number: {:?}", record.get(4));
+                        eprintln!("Invalid x coordinate: {:?}", record.get(0));
+                        continue;
+                    }
+                };
+
+                let y: f32 = match record.get(1).and_then(|s| s.parse().ok()) {
+                    Some(n) => n,
+                    None => {
+                        eprintln!("Invalid y coordinate: {:?}", record.get(1));
                         continue;
                     }
                 };
@@ -292,17 +301,25 @@ fn load_update_frames(file_path: &str) -> Vec<UpdateFrame> {
 
                 let color = driver.color;
 
+                let nearest_led = LED_DATA.iter()
+                    .min_by(|a, b| {
+                        let dist_a = ((a.x_led - x).powi(2) + (a.y_led - y).powi(2)).sqrt();
+                        let dist_b = ((b.x_led - x).powi(2) + (b.y_led - y).powi(2)).sqrt();
+                        dist_a.partial_cmp(&dist_b).unwrap()
+                    })
+                    .unwrap();
+
                 if let Some(frame) = &mut current_frame {
                     if frame.timestamp == timestamp {
-                        frame.set_led_state(led_number, color);
+                        frame.set_led_state(nearest_led.led_number, color);
                     } else {
                         update_frames.push(frame.clone());
                         current_frame = Some(UpdateFrame::new(timestamp));
-                        current_frame.as_mut().unwrap().set_led_state(led_number, color);
+                        current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
                     }
                 } else {
                     current_frame = Some(UpdateFrame::new(timestamp));
-                    current_frame.as_mut().unwrap().set_led_state(led_number, color);
+                    current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
                 }
             }
             Err(e) => {
