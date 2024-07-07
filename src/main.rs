@@ -307,6 +307,13 @@ impl<Message> Program<Message> for Graph {
         let scale_x = bounds.width / width;
         let scale_y = bounds.height / height;
 
+        // Draw the red 20px by 20px rectangle at (0,0) in LED coordinates
+        let red_rect = Path::rectangle(
+            Point::new((0.0 - min_x) * scale_x, (0.0 - min_y) * scale_y),
+            Size::new(20.0, 20.0),
+        );
+        frame.fill(&red_rect, Color::from_rgb(1.0, 0.0, 0.0));
+
         for led in &self.data {
             let x = (led.x_led - min_x) * scale_x;
             let y = (led.y_led - min_y) * scale_y;
