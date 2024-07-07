@@ -13,7 +13,7 @@ use iced::{
 
 use std::time::{Duration, Instant};
 use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
-use driver_info::{DriverInfo, DRIVERS};
+use driver_info::DRIVERS;
 use std::fs::File;
 use std::io::BufReader;
 use csv::Reader;
@@ -112,7 +112,7 @@ impl Application for Race {
         let blink = match self.state {
             State::Idle => Subscription::none(),
             State::Ticking { .. } => {
-                time::every(Duration::from_millis(250)).map(|_| Message::Blink)
+                time::every(Duration::from_millis(100)).map(|_| Message::Blink)
             }
         };
 
@@ -240,7 +240,7 @@ impl<Message> Program<Message> for Graph {
                 .map(|(_, col)| Color::from_rgb8(col.0, col.1, col.2))
                 .unwrap_or(Color::from_rgb(0.0, 1.0, 0.0));
 
-            let point = Path::rectangle(Point::new(x, y), Size::new(5.0, 5.0));
+            let point = Path::rectangle(Point::new(x, y), Size::new(10.0, 10.0));
             frame.fill(&point, color);
         }
 
