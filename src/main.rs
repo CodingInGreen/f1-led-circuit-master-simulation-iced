@@ -91,7 +91,7 @@ impl Application for Race {
                     self.state = State::Fetching;
                     self.update_frames.clear();
                     self.current_frame_index = 0;
-                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), 0, 1200), Message::DataFetched);
+                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), 0, 3, 120), Message::DataFetched);
                 }
                 State::Fetching => {
                     self.state = State::Idle;
@@ -125,7 +125,7 @@ impl Application for Race {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
-                    return Command::perform(sleep_and_fetch_next(self.client.clone(), self.driver_numbers.clone(), 1200), Message::DataFetched);
+                    return Command::perform(sleep_and_fetch_next(self.client.clone(), self.driver_numbers.clone(), 3, 120), Message::DataFetched);
                 } else {
                     self.state = State::Idle;
                 }
@@ -288,35 +288,40 @@ impl<Message> Program<Message> for Graph {
     }
 }
 
-async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index: usize, entries_per_chunk: usize) -> Result<Vec<UpdateFrame>, String> {
+async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index: usize, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
     let session_key = "9149";
     let start_time: &str = "2023-08-27T12:58:56.200";
     let end_time: &str = "2023-08-27T13:20:54.300";
 
     let mut all_data: Vec<LocationData> = Vec::new();
 
-    for chunk_start in (start_index..driver_numbers.len()).step_by(20) {
-        for driver_number in &driver_numbers[chunk_start..chunk_start + 20.min(driver_numbers.len() - chunk_start)] {
-            let url = format!(
-                "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
-                session_key, driver_number, start_time, end_time,
-            );
-            eprintln!("url: {}", url);
-            let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-            if resp.status().is_success() {
-                let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
-                all_data.extend(data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0));
-            } else {
-                eprintln!(
-                    "Failed to fetch data for driver {}: HTTP {}",
-                    driver_number,
-                    resp.status()
+    for chunk_start in (start_index..driver_numbers.len()).step_by(drivers_per_batch) {
+        for driver_number in &driver_numbers[chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)] {
+            let mut fetched_entries = 0;
+
+            while fetched_entries < entries_per_driver {
+                let url = format!(
+                    "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
+                    session_key, driver_number, start_time, end_time,
                 );
+                eprintln!("url: {}", url);
+                let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+                if resp.status().is_success() {
+                    let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
+                    let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
+                    fetched_entries += valid_data.len();
+                    all_data.extend(valid_data);
+                } else {
+                    eprintln!(
+                        "Failed to fetch data for driver {}: HTTP {}",
+                        driver_number,
+                        resp.status()
+                    );
+                    break;
+                }
             }
         }
-        if all_data.len() >= entries_per_chunk {
-            break;
-        }
+        sleep(Duration::from_millis(1050)).await;
     }
 
     // Sort the data by the date field
@@ -370,7 +375,7 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
     Ok(update_frames)
 }
 
-async fn sleep_and_fetch_next(client: Client, driver_numbers: Vec<u32>, entries_per_chunk: usize) -> Result<Vec<UpdateFrame>, String> {
-    sleep(Duration::from_millis(1250)).await;
-    fetch_driver_data(client, driver_numbers, 0, entries_per_chunk).await
+async fn sleep_and_fetch_next(client: Client, driver_numbers: Vec<u32>, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
+    sleep(Duration::from_millis(1050)).await;
+    fetch_driver_data(client, driver_numbers, 0, drivers_per_batch, entries_per_driver).await
 }
