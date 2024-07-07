@@ -283,6 +283,11 @@ fn load_update_frames(file_path: &str) -> Vec<UpdateFrame> {
                     }
                 };
 
+                // Ignore rows with (0, 0) coordinates
+                if x == 0.0 && y == 0.0 {
+                    continue;
+                }
+
                 let driver_number: u32 = match record.get(3).and_then(|s| s.parse().ok()) {
                     Some(n) => n,
                     None => {
@@ -334,4 +339,5 @@ fn load_update_frames(file_path: &str) -> Vec<UpdateFrame> {
 
     update_frames
 }
+
 
