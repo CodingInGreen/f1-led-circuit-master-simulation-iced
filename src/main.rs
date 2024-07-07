@@ -124,6 +124,7 @@ pub fn main() -> iced::Result {
 struct Stopwatch {
     duration: Duration,
     state: State,
+    blink_state: bool,
 }
 
 enum State {
@@ -136,6 +137,7 @@ enum Message {
     Toggle,
     Reset,
     Tick(Instant),
+    Blink,
 }
 
 impl Application for Stopwatch {
@@ -149,6 +151,7 @@ impl Application for Stopwatch {
             Stopwatch {
                 duration: Duration::default(),
                 state: State::Idle,
+                blink_state: false,
             },
             Command::none(),
         )
@@ -168,6 +171,7 @@ impl Application for Stopwatch {
                 }
                 State::Ticking { .. } => {
                     self.state = State::Idle;
+                    self.blink_state = false;
                 }
             },
             Message::Tick(now) => {
@@ -178,6 +182,10 @@ impl Application for Stopwatch {
             }
             Message::Reset => {
                 self.duration = Duration::default();
+                self.blink_state = false;
+            }
+            Message::Blink => {
+                self.blink_state = !self.blink_state;
             }
         }
 
@@ -192,22 +200,14 @@ impl Application for Stopwatch {
             }
         };
 
-        fn handle_hotkey(
-            key: keyboard::Key,
-            _modifiers: keyboard::Modifiers,
-        ) -> Option<Message> {
-            use keyboard::key;
-
-            match key.as_ref() {
-                keyboard::Key::Named(key::Named::Space) => {
-                    Some(Message::Toggle)
-                }
-                keyboard::Key::Character("r") => Some(Message::Reset),
-                _ => None,
+        let blink = match self.state {
+            State::Idle => Subscription::none(),
+            State::Ticking { .. } => {
+                time::every(Duration::from_millis(500)).map(|_| Message::Blink)
             }
-        }
+        };
 
-        Subscription::batch(vec![tick, keyboard::on_key_press(handle_hotkey)])
+        Subscription::batch(vec![tick, blink])
     }
 
     fn view(&self) -> Element<Message> {
@@ -254,9 +254,12 @@ impl Application for Stopwatch {
         .align_items(Alignment::Center)
         .spacing(20);
 
-        let canvas = Canvas::new(Graph { data: LED_DATA.to_vec() })
-            .width(Length::Fill)
-            .height(Length::Fill);
+        let canvas = Canvas::new(Graph {
+            data: LED_DATA.to_vec(),
+            blink_state: self.blink_state,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
 
         container(column![canvas, content])
             .width(Length::Fill)
@@ -274,6 +277,7 @@ impl Application for Stopwatch {
 
 struct Graph {
     data: Vec<LedCoordinate>,
+    blink_state: bool,
 }
 
 impl<Message> Program<Message> for Graph {
@@ -307,12 +311,13 @@ impl<Message> Program<Message> for Graph {
         let scale_x = bounds.width / width;
         let scale_y = bounds.height / height;
 
-        // Draw the red 20px by 20px rectangle at (0,0) in LED coordinates
-        let red_rect = Path::rectangle(
+        // Draw the blinking rectangle
+        let color = if self.blink_state { Color::from_rgb(0.0, 0.0, 1.0) } else { Color::from_rgb(1.0, 0.0, 0.0) };
+        let blinking_rect = Path::rectangle(
             Point::new((0.0 - min_x) * scale_x, bounds.height - (0.0 - min_y) * scale_y - 10.0),
             Size::new(10.0, 10.0),
         );
-        frame.fill(&red_rect, Color::from_rgb(1.0, 0.0, 0.0));
+        frame.fill(&blinking_rect, color);
 
         for led in &self.data {
             let x = (led.x_led - min_x) * scale_x;
