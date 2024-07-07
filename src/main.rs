@@ -3,7 +3,7 @@ use iced::executor;
 use iced::keyboard;
 use iced::theme::{self, Theme};
 use iced::time;
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{button, column, container, text};
 use iced::{
     Alignment, Application, Command, Element, Length, Settings, Subscription,
 };
@@ -139,17 +139,20 @@ impl Application for Stopwatch {
             .style(theme::Button::Destructive)
             .on_press(Message::Reset);
 
-        let controls = row![toggle_button, reset_button].spacing(20);
+        let controls = column![toggle_button, reset_button].spacing(20);
 
         let content = column![duration, controls]
             .align_items(Alignment::Center)
-            .spacing(20);
+            .spacing(20)
+            .width(Length::Shrink)
+            .height(Length::Shrink);
 
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .center_x()
-            .center_y()
+            .align_y(alignment::Vertical::Top)
+            .padding(20)
             .into()
     }
 
