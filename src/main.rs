@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 use led_data::{LedCoordinate, LED_DATA};
 
 pub fn main() -> iced::Result {
-    Stopwatch::run(Settings::default())
+    Race::run(Settings::default())
 }
 
-struct Stopwatch {
+struct Race {
     duration: Duration,
     state: State,
     blink_state: bool,
@@ -37,15 +37,15 @@ enum Message {
     Blink,
 }
 
-impl Application for Stopwatch {
+impl Application for Race {
     type Message = Message;
     type Theme = Theme;
     type Executor = executor::Default;
     type Flags = ();
 
-    fn new(_flags: ()) -> (Stopwatch, Command<Message>) {
+    fn new(_flags: ()) -> (Race, Command<Message>) {
         (
-            Stopwatch {
+            Race {
                 duration: Duration::default(),
                 state: State::Idle,
                 blink_state: false,
@@ -55,7 +55,7 @@ impl Application for Stopwatch {
     }
 
     fn title(&self) -> String {
-        String::from("Stopwatch - Iced")
+        String::from("F1-LED-CIRCUIT")
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
@@ -93,14 +93,14 @@ impl Application for Stopwatch {
         let tick = match self.state {
             State::Idle => Subscription::none(),
             State::Ticking { .. } => {
-                time::every(Duration::from_millis(10)).map(Message::Tick)
+                time::every(Duration::from_millis(250)).map(Message::Tick)
             }
         };
 
         let blink = match self.state {
             State::Idle => Subscription::none(),
             State::Ticking { .. } => {
-                time::every(Duration::from_millis(500)).map(|_| Message::Blink)
+                time::every(Duration::from_millis(250)).map(|_| Message::Blink)
             }
         };
 
@@ -210,20 +210,19 @@ impl<Message> Program<Message> for Graph {
         let scale_x = (bounds.width - 2.0 * padding) / width;
         let scale_y = (bounds.height - 2.0 * padding) / height;
 
-        // Draw the blinking rectangle
-        let color = if self.blink_state { Color::from_rgb(0.0, 0.0, 1.0) } else { Color::from_rgb(1.0, 0.0, 0.0) };
-        let blinking_rect = Path::rectangle(
-            Point::new((0.0 - min_x) * scale_x + padding, bounds.height - (0.0 - min_y) * scale_y - padding - 10.0),
-            Size::new(10.0, 10.0),
-        );
-        frame.fill(&blinking_rect, color);
-
+        // Draw the LEDs
         for led in &self.data {
             let x = (led.x_led - min_x) * scale_x + padding;
             let y = bounds.height - (led.y_led - min_y) * scale_y - padding;
 
+            let color = if self.blink_state {
+                Color::from_rgb(0.0, 0.0, 1.0)
+            } else {
+                Color::from_rgb(0.0, 1.0, 0.0)
+            };
+
             let point = Path::rectangle(Point::new(x, y), Size::new(5.0, 5.0));
-            frame.fill(&point, Color::from_rgb(0.0, 1.0, 0.0));
+            frame.fill(&point, color);
         }
 
         vec![frame.into_geometry()]
