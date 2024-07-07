@@ -205,20 +205,22 @@ impl<Message> Program<Message> for Graph {
         let width = max_x - min_x;
         let height = max_y - min_y;
 
-        let scale_x = bounds.width / width;
-        let scale_y = bounds.height / height;
+        // Apply padding
+        let padding = 50.0;
+        let scale_x = (bounds.width - 2.0 * padding) / width;
+        let scale_y = (bounds.height - 2.0 * padding) / height;
 
         // Draw the blinking rectangle
         let color = if self.blink_state { Color::from_rgb(0.0, 0.0, 1.0) } else { Color::from_rgb(1.0, 0.0, 0.0) };
         let blinking_rect = Path::rectangle(
-            Point::new((0.0 - min_x) * scale_x, bounds.height - (0.0 - min_y) * scale_y - 10.0),
+            Point::new((0.0 - min_x) * scale_x + padding, bounds.height - (0.0 - min_y) * scale_y - padding - 10.0),
             Size::new(10.0, 10.0),
         );
         frame.fill(&blinking_rect, color);
 
         for led in &self.data {
-            let x = (led.x_led - min_x) * scale_x;
-            let y = bounds.height - (led.y_led - min_y) * scale_y;
+            let x = (led.x_led - min_x) * scale_x + padding;
+            let y = bounds.height - (led.y_led - min_y) * scale_y - padding;
 
             let point = Path::rectangle(Point::new(x, y), Size::new(5.0, 5.0));
             frame.fill(&point, Color::from_rgb(0.0, 1.0, 0.0));
