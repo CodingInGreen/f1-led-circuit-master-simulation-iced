@@ -309,14 +309,14 @@ impl<Message> Program<Message> for Graph {
 
         // Draw the red 20px by 20px rectangle at (0,0) in LED coordinates
         let red_rect = Path::rectangle(
-            Point::new((0.0 - min_x) * scale_x, (0.0 - min_y) * scale_y),
-            Size::new(20.0, 20.0),
+            Point::new((0.0 - min_x) * scale_x, bounds.height - (0.0 - min_y) * scale_y - 10.0),
+            Size::new(10.0, 10.0),
         );
         frame.fill(&red_rect, Color::from_rgb(1.0, 0.0, 0.0));
 
         for led in &self.data {
             let x = (led.x_led - min_x) * scale_x;
-            let y = (led.y_led - min_y) * scale_y;
+            let y = bounds.height - (led.y_led - min_y) * scale_y;
 
             let point = Path::rectangle(Point::new(x, y), Size::new(5.0, 5.0));
             frame.fill(&point, Color::from_rgb(0.0, 1.0, 0.0));
