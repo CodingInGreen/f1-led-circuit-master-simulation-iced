@@ -1,8 +1,8 @@
 mod led_data;
+mod driver_info;
 
 use iced::alignment;
 use iced::executor;
-use iced::keyboard;
 use iced::theme::{self, Theme};
 use iced::time;
 use iced::widget::{button, container, row, text, column};
@@ -12,7 +12,11 @@ use iced::{
 };
 
 use std::time::{Duration, Instant};
-use led_data::{LedCoordinate, LED_DATA};
+use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
+use driver_info::{DriverInfo, DRIVERS};
+use std::fs::File;
+use std::io::BufReader;
+use csv::Reader;
 
 pub fn main() -> iced::Result {
     Race::run(Settings::default())
@@ -22,6 +26,8 @@ struct Race {
     duration: Duration,
     state: State,
     blink_state: bool,
+    update_frames: Vec<UpdateFrame>,
+    current_frame_index: usize,
 }
 
 enum State {
@@ -44,11 +50,15 @@ impl Application for Race {
     type Flags = ();
 
     fn new(_flags: ()) -> (Race, Command<Message>) {
+        let update_frames = load_update_frames("processed_100k.csv");
+
         (
             Race {
                 duration: Duration::default(),
                 state: State::Idle,
                 blink_state: false,
+                update_frames,
+                current_frame_index: 0,
             },
             Command::none(),
         )
@@ -80,9 +90,11 @@ impl Application for Race {
             Message::Reset => {
                 self.duration = Duration::default();
                 self.blink_state = false;
+                self.current_frame_index = 0;
             }
             Message::Blink => {
                 self.blink_state = !self.blink_state;
+                self.current_frame_index = (self.current_frame_index + 1) % self.update_frames.len();
             }
         }
 
@@ -93,7 +105,7 @@ impl Application for Race {
         let tick = match self.state {
             State::Idle => Subscription::none(),
             State::Ticking { .. } => {
-                time::every(Duration::from_millis(250)).map(Message::Tick)
+                time::every(Duration::from_millis(10)).map(Message::Tick)
             }
         };
 
@@ -154,6 +166,8 @@ impl Application for Race {
         let canvas = Canvas::new(Graph {
             data: LED_DATA.to_vec(),
             blink_state: self.blink_state,
+            update_frames: self.update_frames.clone(),
+            current_frame_index: self.current_frame_index,
         })
         .width(Length::Fill)
         .height(Length::Fill);
@@ -175,6 +189,8 @@ impl Application for Race {
 struct Graph {
     data: Vec<LedCoordinate>,
     blink_state: bool,
+    update_frames: Vec<UpdateFrame>,
+    current_frame_index: usize,
 }
 
 impl<Message> Program<Message> for Graph {
@@ -210,16 +226,19 @@ impl<Message> Program<Message> for Graph {
         let scale_x = (bounds.width - 2.0 * padding) / width;
         let scale_y = (bounds.height - 2.0 * padding) / height;
 
-        // Draw the LEDs
+        // Draw the LED rectangles
+        let frame_data = &self.update_frames[self.current_frame_index];
+
         for led in &self.data {
             let x = (led.x_led - min_x) * scale_x + padding;
             let y = bounds.height - (led.y_led - min_y) * scale_y - padding;
 
-            let color = if self.blink_state {
-                Color::from_rgb(0.0, 0.0, 1.0)
-            } else {
-                Color::from_rgb(0.0, 1.0, 0.0)
-            };
+            let color = frame_data
+                .led_states
+                .iter()
+                .find(|(num, _)| *num == led.led_number)
+                .map(|(_, col)| Color::from_rgb8(col.0, col.1, col.2))
+                .unwrap_or(Color::from_rgb(0.0, 1.0, 0.0));
 
             let point = Path::rectangle(Point::new(x, y), Size::new(5.0, 5.0));
             frame.fill(&point, color);
@@ -228,3 +247,74 @@ impl<Message> Program<Message> for Graph {
         vec![frame.into_geometry()]
     }
 }
+
+fn load_update_frames(file_path: &str) -> Vec<UpdateFrame> {
+    let file = File::open(file_path).expect("Unable to open file");
+    let mut rdr = Reader::from_reader(BufReader::new(file));
+
+    let mut update_frames = Vec::new();
+    let mut current_frame: Option<UpdateFrame> = None;
+
+    for result in rdr.records() {
+        match result {
+            Ok(record) => {
+                let timestamp: u64 = match record.get(2).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp_millis() as u64)) {
+                    Some(t) => t,
+                    None => {
+                        eprintln!("Invalid timestamp: {:?}", record.get(2));
+                        continue;
+                    }
+                };
+
+                let led_number: u32 = match record.get(4).and_then(|s| s.parse().ok()) {
+                    Some(n) => n,
+                    None => {
+                        eprintln!("Invalid LED number: {:?}", record.get(4));
+                        continue;
+                    }
+                };
+
+                let driver_number: u32 = match record.get(3).and_then(|s| s.parse().ok()) {
+                    Some(n) => n,
+                    None => {
+                        eprintln!("Invalid driver number: {:?}", record.get(3));
+                        continue;
+                    }
+                };
+
+                let driver = match DRIVERS.iter().find(|d| d.number == driver_number) {
+                    Some(d) => d,
+                    None => {
+                        eprintln!("Driver not found for number: {}", driver_number);
+                        continue;
+                    }
+                };
+
+                let color = driver.color;
+
+                if let Some(frame) = &mut current_frame {
+                    if frame.timestamp == timestamp {
+                        frame.set_led_state(led_number, color);
+                    } else {
+                        update_frames.push(frame.clone());
+                        current_frame = Some(UpdateFrame::new(timestamp));
+                        current_frame.as_mut().unwrap().set_led_state(led_number, color);
+                    }
+                } else {
+                    current_frame = Some(UpdateFrame::new(timestamp));
+                    current_frame.as_mut().unwrap().set_led_state(led_number, color);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error reading record: {}", e);
+            }
+        }
+    }
+
+    if let Some(frame) = current_frame {
+        update_frames.push(frame);
+    }
+
+    update_frames
+}
+

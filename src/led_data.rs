@@ -5,6 +5,26 @@ pub struct LedCoordinate {
     pub led_number: u32,
 }
 
+#[derive(Clone)]
+pub struct UpdateFrame {
+    pub timestamp: u64,
+    pub led_states: Vec<(u32, (u8, u8, u8))>,
+}
+
+impl UpdateFrame {
+    pub fn new(timestamp: u64) -> Self {
+        Self {
+            timestamp,
+            led_states: Vec::new(),
+        }
+    }
+
+    pub fn set_led_state(&mut self, led_number: u32, color: (u8, u8, u8)) {
+        self.led_states.push((led_number, color));
+    }
+}
+
+
 pub const LED_DATA: &[LedCoordinate] = &[
     LedCoordinate { x_led: 6413.0, y_led: 33.0, led_number: 1 },
     LedCoordinate { x_led: 6007.0, y_led: 197.0, led_number: 2 },
