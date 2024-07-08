@@ -52,7 +52,7 @@ enum Message {
     Toggle,
     Reset,
     Tick(Instant),
-    Blink,
+    LedOn,
     DataFetched(Result<Vec<UpdateFrame>, String>),
 }
 
@@ -112,7 +112,7 @@ impl Application for Race {
                 self.led_state = false;
                 self.current_frame_index = 0;
             }
-            Message::Blink => {
+            Message::LedOn => {
                 if !self.update_frames.is_empty() {
                     self.led_state = !self.led_state;
                     self.current_frame_index = (self.current_frame_index + 1) % self.update_frames.len();
@@ -146,14 +146,14 @@ impl Application for Race {
             }
         };
 
-        let blink = match self.state {
+        let led_on = match self.state {
             State::Idle | State::Fetching => Subscription::none(),
             State::Ticking { .. } => {
-                time::every(Duration::from_millis(100)).map(|_| Message::Blink)
+                time::every(Duration::from_millis(100)).map(|_| Message::LedOn)
             }
         };
 
-        Subscription::batch(vec![tick, blink])
+        Subscription::batch(vec![tick, led_on])
     }
 
 fn view(&self) -> Element<Message> {
