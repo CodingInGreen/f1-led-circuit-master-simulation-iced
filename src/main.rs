@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
 use driver_info::DRIVERS;
 use std::f32;
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use tokio::time::sleep;
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +39,7 @@ struct Race {
     current_frame_index: usize,
     client: Client,
     driver_numbers: Vec<u32>,
+    last_fetched_timestamp: Option<DateTime<Utc>>,
 }
 
 enum State {
@@ -74,6 +75,7 @@ impl Application for Race {
                 driver_numbers: vec![
                     1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
                 ],
+                last_fetched_timestamp: None,
             },
             Command::none(),
         )
@@ -90,7 +92,17 @@ impl Application for Race {
                     self.state = State::Fetching;
                     self.update_frames.clear();
                     self.current_frame_index = 0;
-                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), 0, 3, 120), Message::DataFetched);
+                    return Command::perform(
+                        fetch_driver_data(
+                            self.client.clone(),
+                            self.driver_numbers.clone(),
+                            0,
+                            3,
+                            120,
+                            self.last_fetched_timestamp.clone()
+                        ), 
+                        Message::DataFetched
+                    );
                 }
                 State::Fetching => {
                     self.state = State::Idle;
@@ -119,12 +131,27 @@ impl Application for Race {
                 }
             }
             Message::DataFetched(Ok(new_frames)) => {
+                if let Some(last_frame) = new_frames.last() {
+                    self.last_fetched_timestamp = Some(DateTime::<Utc>::from_utc(
+                        chrono::NaiveDateTime::from_timestamp(last_frame.timestamp as i64 / 1000, 0), 
+                        Utc,
+                    ));
+                }
                 self.update_frames.extend(new_frames);
                 if !self.update_frames.is_empty() {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
-                    return Command::perform(sleep_and_fetch_next(self.client.clone(), self.driver_numbers.clone(), 3, 120), Message::DataFetched);
+                    return Command::perform(
+                        sleep_and_fetch_next(
+                            self.client.clone(),
+                            self.driver_numbers.clone(),
+                            3,
+                            120,
+                            self.last_fetched_timestamp.clone()
+                        ), 
+                        Message::DataFetched
+                    );
                 } else {
                     self.state = State::Idle;
                 }
@@ -155,103 +182,101 @@ impl Application for Race {
         Subscription::batch(vec![tick, led_on])
     }
 
-fn view(&self) -> Element<Message> {
-    if let State::Fetching = self.state {
-        return container(
-            text("DOWNLOADING DATA...")
-                .size(50)
-                .horizontal_alignment(alignment::Horizontal::Center)
-                .vertical_alignment(alignment::Vertical::Center),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(alignment::Horizontal::Center)
-        .align_y(alignment::Vertical::Center)
-        .into();
-    }
+    fn view(&self) -> Element<Message> {
+        if let State::Fetching = self.state {
+            return container(
+                text("DOWNLOADING DATA...")
+                    .size(50)
+                    .horizontal_alignment(alignment::Horizontal::Center)
+                    .vertical_alignment(alignment::Vertical::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .into();
+        }
 
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
+        const MINUTE: u64 = 60;
+        const HOUR: u64 = 60 * MINUTE;
 
-    let seconds = self.duration.as_secs();
+        let seconds = self.duration.as_secs();
 
-    let duration = text(format!(
-        "{:0>2}:{:0>2}:{:0>2}.{:0>2}",
-        seconds / HOUR,
-        (seconds % HOUR) / MINUTE,
-        seconds % MINUTE,
-        self.duration.subsec_millis() / 10,
-    ))
-    .size(40);
+        let duration = text(format!(
+            "{:0>2}:{:0>2}:{:0>2}.{:0>2}",
+            seconds / HOUR,
+            (seconds % HOUR) / MINUTE,
+            seconds % MINUTE,
+            self.duration.subsec_millis() / 10,
+        ))
+        .size(40);
 
-    let button = |label| {
-        button(
-            text(label).horizontal_alignment(alignment::Horizontal::Center),
-        )
-        .padding(10)
-        .width(80)
-    };
-
-    let toggle_button = {
-        let label = match self.state {
-            State::Idle | State::Fetching => "Start",
-            State::Ticking { .. } => "Stop",
+        let button = |label| {
+            button(
+                text(label).horizontal_alignment(alignment::Horizontal::Center),
+            )
+            .padding(10)
+            .width(80)
         };
 
-        button(label).on_press(Message::Toggle)
-    };
+        let toggle_button = {
+            let label = match self.state {
+                State::Idle | State::Fetching => "Start",
+                State::Ticking { .. } => "Stop",
+            };
 
-    let reset_button = button("Reset")
-        .style(theme::Button::Destructive)
-        .on_press(Message::Reset);
+            button(label).on_press(Message::Toggle)
+        };
 
-    let duration_container = container(duration)
-        .padding(10)
-        .align_x(alignment::Horizontal::Left)
+        let reset_button = button("Reset")
+            .style(theme::Button::Destructive)
+            .on_press(Message::Reset);
+
+        let duration_container = container(duration)
+            .padding(10)
+            .align_x(alignment::Horizontal::Left)
+            .align_y(alignment::Vertical::Bottom)
+            .width(Length::FillPortion(1));
+
+        let buttons_container = container(
+            row![
+                container(toggle_button).padding(10),
+                container(reset_button).padding(10)
+            ]
+            .align_items(Alignment::Center)
+            .spacing(20)
+        )
+        .align_x(alignment::Horizontal::Right)
         .align_y(alignment::Vertical::Bottom)
         .width(Length::FillPortion(1));
 
-    let buttons_container = container(
-        row![
-            container(toggle_button).padding(10),
-            container(reset_button).padding(10)
+        let bottom_row = row![
+            duration_container,
+            buttons_container
         ]
-        .align_items(Alignment::Center)
-        .spacing(20)
-    )
-    .align_x(alignment::Horizontal::Right)
-    .align_y(alignment::Vertical::Bottom)
-    .width(Length::FillPortion(1));
+        .width(Length::Fill);
 
-    let bottom_row = row![
-        duration_container,
-        buttons_container
-    ]
-    .width(Length::Fill);
+        let canvas = Canvas::new(Graph {
+            data: LED_DATA.to_vec(),
+            led_state: self.led_state,
+            update_frames: self.update_frames.clone(),
+            current_frame_index: self.current_frame_index,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
 
-    let canvas = Canvas::new(Graph {
-        data: LED_DATA.to_vec(),
-        led_state: self.led_state,
-        update_frames: self.update_frames.clone(),
-        current_frame_index: self.current_frame_index,
-    })
-    .width(Length::Fill)
-    .height(Length::Fill);
-
-    container(
-        column![
-            canvas,
-            bottom_row
-        ]
-        .spacing(20)
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .padding(20)
-    .into()
-}
-
-    
+        container(
+            column![
+                canvas,
+                bottom_row
+            ]
+            .spacing(20)
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(20)
+        .into()
+    }
 
     fn theme(&self) -> Theme {
         Theme::Light
@@ -322,10 +347,19 @@ impl<Message> Program<Message> for Graph {
     }
 }
 
-async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index: usize, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
+async fn fetch_driver_data(
+    client: Client,
+    driver_numbers: Vec<u32>,
+    start_index: usize,
+    drivers_per_batch: usize,
+    entries_per_driver: usize,
+    last_fetched_timestamp: Option<DateTime<Utc>>,
+) -> Result<Vec<UpdateFrame>, String> {
     let session_key = "9149";
-    let start_time: &str = "2023-08-27T12:58:56.200";
-    let end_time: &str = "2023-08-27T13:20:54.300";
+    let start_time = last_fetched_timestamp
+        .map(|ts| ts.to_rfc3339())
+        .unwrap_or_else(|| "2023-08-27T12:58:56.200Z".to_string());
+    let end_time: &str = "2023-08-27T13:20:54.300Z";
 
     let mut all_data: Vec<LocationData> = Vec::new();
 
@@ -409,7 +443,13 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
     Ok(update_frames)
 }
 
-async fn sleep_and_fetch_next(client: Client, driver_numbers: Vec<u32>, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
+async fn sleep_and_fetch_next(
+    client: Client,
+    driver_numbers: Vec<u32>,
+    drivers_per_batch: usize,
+    entries_per_driver: usize,
+    last_fetched_timestamp: Option<DateTime<Utc>>,
+) -> Result<Vec<UpdateFrame>, String> {
     sleep(Duration::from_millis(334)).await;
-    fetch_driver_data(client, driver_numbers, 0, drivers_per_batch, entries_per_driver).await
+    fetch_driver_data(client, driver_numbers, 0, drivers_per_batch, entries_per_driver, last_fetched_timestamp).await
 }
