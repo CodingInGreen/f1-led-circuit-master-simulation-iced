@@ -360,6 +360,7 @@ async fn fetch_driver_data(
     let end_time: &str = "2023-08-27T13:20:54.300Z";
 
     let mut all_data: Vec<LocationData> = Vec::new();
+    let mut total_fetched = 0;
 
     for chunk_start in (0..driver_numbers.len()).step_by(drivers_per_batch) {
         for driver_number in &driver_numbers[chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)] {
@@ -374,11 +375,21 @@ async fn fetch_driver_data(
                 let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
                 if resp.status().is_success() {
                     let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
+                    eprintln!("Fetched data for driver {}: {:?}", driver_number, data);
                     let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
-                    let mut entries_to_add = valid_data.len().min(entries_per_driver - fetched_entries);
+                    
+                    if valid_data.is_empty() {
+                        break; // No more valid data available
+                    }
+
+                    let entries_to_add = valid_data.len().min(entries_per_driver - fetched_entries);
                     fetched_entries += entries_to_add;
-                    eprintln!("Fetched {} entries for driver number {}", entries_to_add, driver_number);
+                    total_fetched += entries_to_add;
                     all_data.extend(valid_data.into_iter().take(entries_to_add));
+
+                    if fetched_entries >= entries_per_driver || total_fetched >= drivers_per_batch * entries_per_driver {
+                        break;
+                    }
                 } else {
                     eprintln!(
                         "Failed to fetch data for driver {}: HTTP {}",
@@ -388,6 +399,14 @@ async fn fetch_driver_data(
                     break;
                 }
             }
+
+            if total_fetched >= drivers_per_batch * entries_per_driver {
+                break;
+            }
+        }
+
+        if total_fetched >= drivers_per_batch * entries_per_driver {
+            break;
         }
     }
 
@@ -397,50 +416,64 @@ async fn fetch_driver_data(
     let mut update_frames = Vec::new();
     let mut current_frame: Option<UpdateFrame> = None;
 
-    for data in all_data {
-        let timestamp = DateTime::parse_from_rfc3339(&data.date).map_err(|e| e.to_string())?.timestamp_millis() as u64;
-        let x = data.x;
-        let y = data.y;
-        let driver_number = data.driver_number;
+    while !all_data.is_empty() {
+        let mut frame_data = Vec::new();
 
-        let driver = match DRIVERS.iter().find(|d| d.number == driver_number) {
-            Some(d) => d,
-            None => {
-                eprintln!("Driver not found for number: {}", driver_number);
-                continue;
+        let timestamp = DateTime::parse_from_rfc3339(&all_data[0].date)
+            .map_err(|e| e.to_string())?
+            .timestamp_millis() as u64;
+
+        while !all_data.is_empty() {
+            let data = &all_data[0];
+            let data_timestamp = DateTime::parse_from_rfc3339(&data.date)
+                .map_err(|e| e.to_string())?
+                .timestamp_millis() as u64;
+
+            if data_timestamp != timestamp {
+                break;
             }
-        };
 
-        let color = driver.color;
-
-        let nearest_led = LED_DATA.iter()
-            .min_by(|a, b| {
-                let dist_a = ((a.x_led - x).powi(2) + (a.y_led - y).powi(2)).sqrt();
-                let dist_b = ((b.x_led - x).powi(2) + (b.y_led - y).powi(2)).sqrt();
-                dist_a.partial_cmp(&dist_b).unwrap()
-            })
-            .unwrap();
-
-        if let Some(frame) = &mut current_frame {
-            if frame.timestamp == timestamp {
-                frame.set_led_state(nearest_led.led_number, color);
-            } else {
-                update_frames.push(frame.clone());
-                current_frame = Some(UpdateFrame::new(timestamp));
-                current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
-            }
-        } else {
-            current_frame = Some(UpdateFrame::new(timestamp));
-            current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
+            frame_data.push(all_data.remove(0));
         }
-    }
 
-    if let Some(frame) = current_frame {
+        let mut frame = UpdateFrame::new(timestamp);
+
+        for data in frame_data {
+            let x = data.x;
+            let y = data.y;
+            let driver_number = data.driver_number;
+
+            let driver = match DRIVERS.iter().find(|d| d.number == driver_number) {
+                Some(d) => d,
+                None => {
+                    eprintln!("Driver not found for number: {}", driver_number);
+                    continue;
+                }
+            };
+
+            let color = driver.color;
+
+            let nearest_led = LED_DATA.iter()
+                .min_by(|a, b| {
+                    let dist_a = ((a.x_led - x).powi(2) + (a.y_led - y).powi(2)).sqrt();
+                    let dist_b = ((b.x_led - x).powi(2) + (b.y_led - y).powi(2)).sqrt();
+                    dist_a.partial_cmp(&dist_b).unwrap()
+                })
+                .unwrap();
+
+            frame.set_led_state(nearest_led.led_number, color);
+        }
+
         update_frames.push(frame);
     }
 
     Ok(update_frames)
 }
+
+
+
+
+
 
 async fn sleep_and_fetch_next(
     client: Client,
