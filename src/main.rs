@@ -17,7 +17,6 @@ use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
 use driver_info::DRIVERS;
 use std::f32;
 use chrono::{DateTime, Utc};
-use tokio::time::sleep;
 
 #[derive(Debug, Deserialize)]
 struct LocationData {
@@ -132,15 +131,6 @@ impl Application for Race {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
-                    return Command::perform(
-                        sleep_and_fetch_next(
-                            self.client.clone(),
-                            self.driver_numbers.clone(),
-                            3,
-                            20,
-                        ), 
-                        Message::DataFetched
-                    );
                 } else {
                     self.state = State::Idle;
                 }
@@ -428,14 +418,4 @@ async fn fetch_driver_data(
     }
 
     Ok(update_frames)
-}
-
-async fn sleep_and_fetch_next(
-    client: Client,
-    driver_numbers: Vec<u32>,
-    drivers_per_batch: usize,
-    max_calls: usize,
-) -> Result<Vec<UpdateFrame>, String> {
-    sleep(Duration::from_millis(334)).await;
-    fetch_driver_data(client, driver_numbers, drivers_per_batch, max_calls).await
 }
