@@ -33,9 +33,7 @@ pub fn main() -> iced::Result {
 struct Race {
     duration: Duration,
     state: State,
-    led_state: bool,
-    update_frames: Vec<UpdateFrame>,
-    current_frame_index: usize,
+    update_frame: Option<UpdateFrame>,
     client: Client,
     driver_numbers: Vec<u32>,
 }
@@ -43,7 +41,7 @@ struct Race {
 enum State {
     Idle,
     Fetching,
-    Ticking { last_tick: Instant },
+    Displaying,
 }
 
 #[derive(Debug, Clone)]
@@ -51,8 +49,7 @@ enum Message {
     Toggle,
     Reset,
     Tick(Instant),
-    LedOn,
-    DataFetched(Result<Vec<UpdateFrame>, String>),
+    DataFetched(Result<UpdateFrame, String>),
 }
 
 impl Application for Race {
@@ -66,9 +63,7 @@ impl Application for Race {
             Race {
                 duration: Duration::default(),
                 state: State::Idle,
-                led_state: false,
-                update_frames: vec![],
-                current_frame_index: 0,
+                update_frame: None,
                 client: Client::new(),
                 driver_numbers: vec![
                     1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
@@ -87,8 +82,7 @@ impl Application for Race {
             Message::Toggle => match self.state {
                 State::Idle => {
                     self.state = State::Fetching;
-                    self.update_frames.clear();
-                    self.current_frame_index = 0;
+                    self.update_frame = None;
                     return Command::perform(
                         fetch_driver_data(
                             self.client.clone(),
@@ -101,36 +95,24 @@ impl Application for Race {
                 }
                 State::Fetching => {
                     self.state = State::Idle;
-                    self.led_state = false;
                 }
-                State::Ticking { .. } => {
+                State::Displaying => {
                     self.state = State::Idle;
-                    self.led_state = false;
                 }
             },
             Message::Tick(now) => {
-                if let State::Ticking { last_tick } = &mut self.state {
-                    self.duration += now - *last_tick;
-                    *last_tick = now;
+                if let State::Displaying = &mut self.state {
+                    self.duration += now - Instant::now();
                 }
             }
             Message::Reset => {
                 self.duration = Duration::default();
-                self.led_state = false;
-                self.current_frame_index = 0;
+                self.update_frame = None;
             }
-            Message::LedOn => {
-                if !self.update_frames.is_empty() {
-                    self.led_state = !self.led_state;
-                    self.current_frame_index = (self.current_frame_index + 1) % self.update_frames.len();
-                }
-            }
-            Message::DataFetched(Ok(new_frames)) => {
-                self.update_frames.extend(new_frames);
-                if !self.update_frames.is_empty() {
-                    self.state = State::Ticking {
-                        last_tick: Instant::now(),
-                    };
+            Message::DataFetched(Ok(new_frame)) => {
+                self.update_frame = Some(new_frame);
+                if self.update_frame.is_some() {
+                    self.state = State::Displaying;
                 } else {
                     self.state = State::Idle;
                 }
@@ -144,21 +126,10 @@ impl Application for Race {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let tick = match self.state {
+        match self.state {
             State::Idle | State::Fetching => Subscription::none(),
-            State::Ticking { .. } => {
-                time::every(Duration::from_millis(10)).map(Message::Tick)
-            }
-        };
-
-        let led_on = match self.state {
-            State::Idle | State::Fetching => Subscription::none(),
-            State::Ticking { .. } => {
-                time::every(Duration::from_millis(100)).map(|_| Message::LedOn)
-            }
-        };
-
-        Subscription::batch(vec![tick, led_on])
+            State::Displaying => time::every(Duration::from_millis(1000)).map(Message::Tick),
+        }
     }
 
     fn view(&self) -> Element<Message> {
@@ -201,7 +172,7 @@ impl Application for Race {
         let toggle_button = {
             let label = match self.state {
                 State::Idle | State::Fetching => "Start",
-                State::Ticking { .. } => "Stop",
+                State::Displaying => "Stop",
             };
 
             button(label).on_press(Message::Toggle)
@@ -237,9 +208,7 @@ impl Application for Race {
 
         let canvas = Canvas::new(Graph {
             data: LED_DATA.to_vec(),
-            led_state: self.led_state,
-            update_frames: self.update_frames.clone(),
-            current_frame_index: self.current_frame_index,
+            update_frame: self.update_frame.clone(),
         })
         .width(Length::Fill)
         .height(Length::Fill);
@@ -264,9 +233,7 @@ impl Application for Race {
 
 struct Graph {
     data: Vec<LedCoordinate>,
-    led_state: bool,
-    update_frames: Vec<UpdateFrame>,
-    current_frame_index: usize,
+    update_frame: Option<UpdateFrame>,
 }
 
 impl<Message> Program<Message> for Graph {
@@ -303,9 +270,7 @@ impl<Message> Program<Message> for Graph {
         let scale_y = (bounds.height - 2.0 * padding) / height;
 
         // Draw the LED rectangles
-        if !self.update_frames.is_empty() {
-            let frame_data = &self.update_frames[self.current_frame_index];
-
+        if let Some(frame_data) = &self.update_frame {
             for led in &self.data {
                 let x = (led.x_led - min_x) * scale_x + padding;
                 let y = bounds.height - (led.y_led - min_y) * scale_y - padding;
@@ -331,7 +296,7 @@ async fn fetch_driver_data(
     driver_numbers: Vec<u32>,
     drivers_per_batch: usize,
     max_calls: usize,
-) -> Result<Vec<UpdateFrame>, String> {
+) -> Result<UpdateFrame, String> {
     let session_key = "9149";
 
     let mut all_data: Vec<LocationData> = Vec::new();
@@ -372,15 +337,9 @@ async fn fetch_driver_data(
         }
     }
 
-    // Process data into update frames
-    let mut update_frames = Vec::new();
-    let mut current_frame: Option<UpdateFrame> = None;
-
+    // Process data into a single update frame
+    let mut update_frame = UpdateFrame::new(0);
     for data in all_data {
-        let timestamp = DateTime::parse_from_rfc3339(&data.date)
-            .map_err(|e| e.to_string())?
-            .timestamp_millis() as u64;
-
         let driver = match DRIVERS.iter().find(|d| d.number == data.driver_number) {
             Some(d) => d,
             None => {
@@ -399,23 +358,8 @@ async fn fetch_driver_data(
             })
             .unwrap();
 
-        if let Some(frame) = &mut current_frame {
-            if frame.timestamp == timestamp {
-                frame.set_led_state(nearest_led.led_number, color);
-            } else {
-                update_frames.push(frame.clone());
-                current_frame = Some(UpdateFrame::new(timestamp));
-                current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
-            }
-        } else {
-            current_frame = Some(UpdateFrame::new(timestamp));
-            current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
-        }
+        update_frame.set_led_state(nearest_led.led_number, color);
     }
 
-    if let Some(frame) = current_frame {
-        update_frames.push(frame);
-    }
-
-    Ok(update_frames)
+    Ok(update_frame)
 }
