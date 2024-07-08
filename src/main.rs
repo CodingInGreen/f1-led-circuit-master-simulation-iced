@@ -96,9 +96,8 @@ impl Application for Race {
                         fetch_driver_data(
                             self.client.clone(),
                             self.driver_numbers.clone(),
-                            0,
                             3,
-                            120,
+                            8,
                             self.last_fetched_timestamp.clone()
                         ), 
                         Message::DataFetched
@@ -147,7 +146,7 @@ impl Application for Race {
                             self.client.clone(),
                             self.driver_numbers.clone(),
                             3,
-                            120,
+                            8,
                             self.last_fetched_timestamp.clone()
                         ), 
                         Message::DataFetched
@@ -350,7 +349,6 @@ impl<Message> Program<Message> for Graph {
 async fn fetch_driver_data(
     client: Client,
     driver_numbers: Vec<u32>,
-    start_index: usize,
     drivers_per_batch: usize,
     entries_per_driver: usize,
     last_fetched_timestamp: Option<DateTime<Utc>>,
@@ -363,7 +361,7 @@ async fn fetch_driver_data(
 
     let mut all_data: Vec<LocationData> = Vec::new();
 
-    for chunk_start in (start_index..driver_numbers.len()).step_by(drivers_per_batch) {
+    for chunk_start in (0..driver_numbers.len()).step_by(drivers_per_batch) {
         for driver_number in &driver_numbers[chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)] {
             let mut fetched_entries = 0;
 
@@ -377,9 +375,10 @@ async fn fetch_driver_data(
                 if resp.status().is_success() {
                     let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
                     let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
-                    fetched_entries += valid_data.len();
-                    eprintln!("Fetched {} entries for driver number {}", valid_data.len(), driver_number);
-                    all_data.extend(valid_data);
+                    let mut entries_to_add = valid_data.len().min(entries_per_driver - fetched_entries);
+                    fetched_entries += entries_to_add;
+                    eprintln!("Fetched {} entries for driver number {}", entries_to_add, driver_number);
+                    all_data.extend(valid_data.into_iter().take(entries_to_add));
                 } else {
                     eprintln!(
                         "Failed to fetch data for driver {}: HTTP {}",
@@ -451,5 +450,5 @@ async fn sleep_and_fetch_next(
     last_fetched_timestamp: Option<DateTime<Utc>>,
 ) -> Result<Vec<UpdateFrame>, String> {
     sleep(Duration::from_millis(334)).await;
-    fetch_driver_data(client, driver_numbers, 0, drivers_per_batch, entries_per_driver, last_fetched_timestamp).await
+    fetch_driver_data(client, driver_numbers, drivers_per_batch, entries_per_driver, last_fetched_timestamp).await
 }
