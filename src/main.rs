@@ -324,6 +324,7 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
                     let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
                     let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
                     fetched_entries += valid_data.len();
+                    eprintln!("Fetched {} entries for driver number {}", valid_data.len(), driver_number);
                     all_data.extend(valid_data);
                 } else {
                     eprintln!(
@@ -389,6 +390,6 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
 }
 
 async fn sleep_and_fetch_next(client: Client, driver_numbers: Vec<u32>, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
-    sleep(Duration::from_millis(331)).await;
+    sleep(Duration::from_millis(334)).await;
     fetch_driver_data(client, driver_numbers, 0, drivers_per_batch, entries_per_driver).await
 }
