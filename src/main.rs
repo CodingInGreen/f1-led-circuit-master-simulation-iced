@@ -39,7 +39,6 @@ struct Race {
     current_frame_index: usize,
     client: Client,
     driver_numbers: Vec<u32>,
-    last_fetched_timestamp: Option<DateTime<Utc>>,
 }
 
 enum State {
@@ -75,7 +74,6 @@ impl Application for Race {
                 driver_numbers: vec![
                     1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
                 ],
-                last_fetched_timestamp: None,
             },
             Command::none(),
         )
@@ -97,8 +95,7 @@ impl Application for Race {
                             self.client.clone(),
                             self.driver_numbers.clone(),
                             3,
-                            8,
-                            self.last_fetched_timestamp.clone()
+                            20,
                         ), 
                         Message::DataFetched
                     );
@@ -130,12 +127,6 @@ impl Application for Race {
                 }
             }
             Message::DataFetched(Ok(new_frames)) => {
-                if let Some(last_frame) = new_frames.last() {
-                    self.last_fetched_timestamp = Some(DateTime::<Utc>::from_utc(
-                        chrono::NaiveDateTime::from_timestamp(last_frame.timestamp as i64 / 1000, 0), 
-                        Utc,
-                    ));
-                }
                 self.update_frames.extend(new_frames);
                 if !self.update_frames.is_empty() {
                     self.state = State::Ticking {
@@ -146,8 +137,7 @@ impl Application for Race {
                             self.client.clone(),
                             self.driver_numbers.clone(),
                             3,
-                            8,
-                            self.last_fetched_timestamp.clone()
+                            20,
                         ), 
                         Message::DataFetched
                     );
@@ -350,138 +340,102 @@ async fn fetch_driver_data(
     client: Client,
     driver_numbers: Vec<u32>,
     drivers_per_batch: usize,
-    entries_per_driver: usize,
-    last_fetched_timestamp: Option<DateTime<Utc>>,
+    max_calls: usize,
 ) -> Result<Vec<UpdateFrame>, String> {
     let session_key = "9149";
-    let start_time = last_fetched_timestamp
-        .map(|ts| ts.to_rfc3339())
-        .unwrap_or_else(|| "2023-08-27T12:58:56.200Z".to_string());
-    let end_time: &str = "2023-08-27T13:20:54.300Z";
 
     let mut all_data: Vec<LocationData> = Vec::new();
-    let mut total_fetched = 0;
+    let mut call_count = 0;
 
     for chunk_start in (0..driver_numbers.len()).step_by(drivers_per_batch) {
         for driver_number in &driver_numbers[chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)] {
-            let mut fetched_entries = 0;
-
-            while fetched_entries < entries_per_driver {
-                let url = format!(
-                    "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
-                    session_key, driver_number, start_time, end_time,
-                );
-                eprintln!("url: {}", url);
-                let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-                if resp.status().is_success() {
-                    let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
-                    eprintln!("Fetched data for driver {}: {:?}", driver_number, data);
-                    let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
-                    
-                    if valid_data.is_empty() {
-                        break; // No more valid data available
-                    }
-
-                    let entries_to_add = valid_data.len().min(entries_per_driver - fetched_entries);
-                    fetched_entries += entries_to_add;
-                    total_fetched += entries_to_add;
-                    all_data.extend(valid_data.into_iter().take(entries_to_add));
-
-                    if fetched_entries >= entries_per_driver || total_fetched >= drivers_per_batch * entries_per_driver {
-                        break;
-                    }
-                } else {
-                    eprintln!(
-                        "Failed to fetch data for driver {}: HTTP {}",
-                        driver_number,
-                        resp.status()
-                    );
-                    break;
-                }
-            }
-
-            if total_fetched >= drivers_per_batch * entries_per_driver {
+            if call_count >= max_calls {
                 break;
             }
-        }
+            let url = format!(
+                "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
+                session_key, driver_number,
+            );
+            eprintln!("url: {}", url);
+            let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
+                let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
 
-        if total_fetched >= drivers_per_batch * entries_per_driver {
+                if let Some(location) = valid_data.into_iter().next() {
+                    eprintln!("Fetched and using data: {:?}", location); // Print debug statement
+                    all_data.push(location);
+                    call_count += 1;
+                } else {
+                    eprintln!("No valid data found for driver {}", driver_number);
+                }
+            } else {
+                eprintln!(
+                    "Failed to fetch data for driver {}: HTTP {}",
+                    driver_number,
+                    resp.status()
+                );
+            }
+        }
+        if call_count >= max_calls {
             break;
         }
     }
 
-    // Sort the data by the date field
-    all_data.sort_by_key(|d| d.date.clone());
-
+    // Process data into update frames
     let mut update_frames = Vec::new();
     let mut current_frame: Option<UpdateFrame> = None;
 
-    while !all_data.is_empty() {
-        let mut frame_data = Vec::new();
-
-        let timestamp = DateTime::parse_from_rfc3339(&all_data[0].date)
+    for data in all_data {
+        let timestamp = DateTime::parse_from_rfc3339(&data.date)
             .map_err(|e| e.to_string())?
             .timestamp_millis() as u64;
 
-        while !all_data.is_empty() {
-            let data = &all_data[0];
-            let data_timestamp = DateTime::parse_from_rfc3339(&data.date)
-                .map_err(|e| e.to_string())?
-                .timestamp_millis() as u64;
-
-            if data_timestamp != timestamp {
-                break;
+        let driver = match DRIVERS.iter().find(|d| d.number == data.driver_number) {
+            Some(d) => d,
+            None => {
+                eprintln!("Driver not found for number: {}", data.driver_number);
+                continue;
             }
+        };
 
-            frame_data.push(all_data.remove(0));
+        let color = driver.color;
+
+        let nearest_led = LED_DATA.iter()
+            .min_by(|a, b| {
+                let dist_a = ((a.x_led - data.x).powi(2) + (a.y_led - data.y).powi(2)).sqrt();
+                let dist_b = ((b.x_led - data.x).powi(2) + (b.y_led - data.y).powi(2)).sqrt();
+                dist_a.partial_cmp(&dist_b).unwrap()
+            })
+            .unwrap();
+
+        if let Some(frame) = &mut current_frame {
+            if frame.timestamp == timestamp {
+                frame.set_led_state(nearest_led.led_number, color);
+            } else {
+                update_frames.push(frame.clone());
+                current_frame = Some(UpdateFrame::new(timestamp));
+                current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
+            }
+        } else {
+            current_frame = Some(UpdateFrame::new(timestamp));
+            current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
         }
+    }
 
-        let mut frame = UpdateFrame::new(timestamp);
-
-        for data in frame_data {
-            let x = data.x;
-            let y = data.y;
-            let driver_number = data.driver_number;
-
-            let driver = match DRIVERS.iter().find(|d| d.number == driver_number) {
-                Some(d) => d,
-                None => {
-                    eprintln!("Driver not found for number: {}", driver_number);
-                    continue;
-                }
-            };
-
-            let color = driver.color;
-
-            let nearest_led = LED_DATA.iter()
-                .min_by(|a, b| {
-                    let dist_a = ((a.x_led - x).powi(2) + (a.y_led - y).powi(2)).sqrt();
-                    let dist_b = ((b.x_led - x).powi(2) + (b.y_led - y).powi(2)).sqrt();
-                    dist_a.partial_cmp(&dist_b).unwrap()
-                })
-                .unwrap();
-
-            frame.set_led_state(nearest_led.led_number, color);
-        }
-
+    if let Some(frame) = current_frame {
         update_frames.push(frame);
     }
 
     Ok(update_frames)
 }
 
-
-
-
-
-
 async fn sleep_and_fetch_next(
     client: Client,
     driver_numbers: Vec<u32>,
     drivers_per_batch: usize,
-    entries_per_driver: usize,
-    last_fetched_timestamp: Option<DateTime<Utc>>,
+    max_calls: usize,
 ) -> Result<Vec<UpdateFrame>, String> {
     sleep(Duration::from_millis(334)).await;
-    fetch_driver_data(client, driver_numbers, drivers_per_batch, entries_per_driver, last_fetched_timestamp).await
+    fetch_driver_data(client, driver_numbers, drivers_per_batch, max_calls).await
 }
