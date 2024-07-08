@@ -299,7 +299,7 @@ async fn fetch_driver_data(
 ) -> Result<UpdateFrame, String> {
     let session_key = "9149";
 
-    let mut all_data: Vec<LocationData> = Vec::new();
+    let mut update_frame = UpdateFrame::new(0);
     let mut call_count = 0;
 
     for chunk_start in (0..driver_numbers.len()).step_by(drivers_per_batch) {
@@ -315,12 +315,32 @@ async fn fetch_driver_data(
             let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
             if resp.status().is_success() {
                 let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
-                let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
-
-                if let Some(location) = valid_data.into_iter().next() {
+                if let Some(location) = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).next() {
                     eprintln!("Fetched and using data: {:?}", location); // Print debug statement
-                    all_data.push(location);
+
+                    let driver = match DRIVERS.iter().find(|d| d.number == location.driver_number) {
+                        Some(d) => d,
+                        None => {
+                            eprintln!("Driver not found for number: {}", location.driver_number);
+                            continue;
+                        }
+                    };
+
+                    let color = driver.color;
+
+                    let nearest_led = LED_DATA.iter()
+                        .min_by(|a, b| {
+                            let dist_a = ((a.x_led - location.x).powi(2) + (a.y_led - location.y).powi(2)).sqrt();
+                            let dist_b = ((b.x_led - location.x).powi(2) + (b.y_led - location.y).powi(2)).sqrt();
+                            dist_a.partial_cmp(&dist_b).unwrap()
+                        })
+                        .unwrap();
+
+                    update_frame.set_led_state(nearest_led.led_number, color);
                     call_count += 1;
+
+                    // Break out of the loop after processing one valid LocationData
+                    break;
                 } else {
                     eprintln!("No valid data found for driver {}", driver_number);
                 }
@@ -335,30 +355,6 @@ async fn fetch_driver_data(
         if call_count >= max_calls {
             break;
         }
-    }
-
-    // Process data into a single update frame
-    let mut update_frame = UpdateFrame::new(0);
-    for data in all_data {
-        let driver = match DRIVERS.iter().find(|d| d.number == data.driver_number) {
-            Some(d) => d,
-            None => {
-                eprintln!("Driver not found for number: {}", data.driver_number);
-                continue;
-            }
-        };
-
-        let color = driver.color;
-
-        let nearest_led = LED_DATA.iter()
-            .min_by(|a, b| {
-                let dist_a = ((a.x_led - data.x).powi(2) + (a.y_led - data.y).powi(2)).sqrt();
-                let dist_b = ((b.x_led - data.x).powi(2) + (b.y_led - data.y).powi(2)).sqrt();
-                dist_a.partial_cmp(&dist_b).unwrap()
-            })
-            .unwrap();
-
-        update_frame.set_led_state(nearest_led.led_number, color);
     }
 
     Ok(update_frame)
