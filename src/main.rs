@@ -132,7 +132,6 @@ impl Application for Race {
             Message::DataFetched(Err(_)) => {
                 self.state = State::Idle;
             }
-            _ => {}
         }
 
         Command::none()
