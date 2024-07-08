@@ -1,22 +1,24 @@
-mod led_data;
 mod driver_info;
+mod led_data;
 
+use chrono::DateTime;
+use driver_info::DRIVERS;
 use iced::alignment;
 use iced::executor;
 use iced::theme::{self, Theme};
 use iced::time;
-use iced::widget::{button, container, row, text, column};
+use iced::widget::{button, column, container, row, text};
 use iced::{
-    Alignment, Application, Command, Element, Length, Settings, Subscription,
-    widget::canvas::{self, Canvas, Path, Frame, Program}, Color, Point, Size, mouse, Renderer
+    mouse,
+    widget::canvas::{self, Canvas, Frame, Path, Program},
+    Alignment, Application, Color, Command, Element, Length, Point, Renderer, Settings, Size,
+    Subscription,
 };
+use led_data::{LedCoordinate, UpdateFrame, LED_DATA};
 use reqwest::Client;
 use serde::Deserialize;
-use std::time::{Duration, Instant};
-use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
-use driver_info::DRIVERS;
 use std::f32;
-use chrono::DateTime;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +36,7 @@ pub fn main() -> iced::Result {
 struct Race {
     duration: Duration,
     state: State,
-    blink_state: bool,
+    led_state: bool,
     update_frames: Vec<UpdateFrame>,
     current_frame_index: usize,
     client: Client,
@@ -68,7 +70,7 @@ impl Application for Race {
             Race {
                 duration: Duration::default(),
                 state: State::Idle,
-                blink_state: false,
+                led_state: false,
                 update_frames: vec![],
                 current_frame_index: 0,
                 client: Client::new(),
@@ -91,15 +93,24 @@ impl Application for Race {
                     self.state = State::Fetching;
                     self.update_frames.clear();
                     self.current_frame_index = 0;
-                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), 0, 3, 120), Message::DataFetched);
+                    return Command::perform(
+                        fetch_driver_data(
+                            self.client.clone(),
+                            self.driver_numbers.clone(),
+                            0,
+                            3,
+                            120,
+                        ),
+                        Message::DataFetched,
+                    );
                 }
                 State::Fetching => {
                     self.state = State::Idle;
-                    self.blink_state = false;
+                    self.led_state = false;
                 }
                 State::Ticking { .. } => {
                     self.state = State::Idle;
-                    self.blink_state = false;
+                    self.led_state = false;
                 }
             },
             Message::Tick(now) => {
@@ -110,13 +121,14 @@ impl Application for Race {
             }
             Message::Reset => {
                 self.duration = Duration::default();
-                self.blink_state = false;
+                self.led_state = false;
                 self.current_frame_index = 0;
             }
             Message::Blink => {
                 if !self.update_frames.is_empty() {
-                    self.blink_state = !self.blink_state;
-                    self.current_frame_index = (self.current_frame_index + 1) % self.update_frames.len();
+                    self.led_state = !self.led_state;
+                    self.current_frame_index =
+                        (self.current_frame_index + 1) % self.update_frames.len();
                 }
             }
             Message::DataFetched(Ok(new_frames)) => {
@@ -125,7 +137,15 @@ impl Application for Race {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
-                    return Command::perform(sleep_and_fetch_next(self.client.clone(), self.driver_numbers.clone(), 3, 120), Message::DataFetched);
+                    return Command::perform(
+                        sleep_and_fetch_next(
+                            self.client.clone(),
+                            self.driver_numbers.clone(),
+                            3,
+                            120,
+                        ),
+                        Message::DataFetched,
+                    );
                 } else {
                     self.state = State::Idle;
                 }
@@ -142,9 +162,7 @@ impl Application for Race {
     fn subscription(&self) -> Subscription<Message> {
         let tick = match self.state {
             State::Idle | State::Fetching => Subscription::none(),
-            State::Ticking { .. } => {
-                time::every(Duration::from_millis(10)).map(Message::Tick)
-            }
+            State::Ticking { .. } => time::every(Duration::from_millis(10)).map(Message::Tick),
         };
 
         let blink = match self.state {
@@ -187,11 +205,9 @@ impl Application for Race {
         .size(40);
 
         let button = |label| {
-            button(
-                text(label).horizontal_alignment(alignment::Horizontal::Center),
-            )
-            .padding(10)
-            .width(80)
+            button(text(label).horizontal_alignment(alignment::Horizontal::Center))
+                .padding(10)
+                .width(80)
         };
 
         let toggle_button = {
@@ -207,28 +223,38 @@ impl Application for Race {
             .style(theme::Button::Destructive)
             .on_press(Message::Reset);
 
-        let content = row![
-            container(duration).padding(10),
-            container(toggle_button).padding(10),
-            container(reset_button).padding(10)
-        ]
-        .align_items(Alignment::Center)
-        .spacing(20);
+        let duration_container = container(duration)
+            .padding(10)
+            .align_x(alignment::Horizontal::Left)
+            .align_y(alignment::Vertical::Bottom)
+            .width(Length::FillPortion(1));
+
+        let buttons_container = container(
+            row![
+                container(toggle_button).padding(10),
+                container(reset_button).padding(10)
+            ]
+            .align_items(Alignment::Center)
+            .spacing(20),
+        )
+        .align_x(alignment::Horizontal::Right)
+        .align_y(alignment::Vertical::Bottom)
+        .width(Length::FillPortion(1));
+
+        let bottom_row = row![duration_container, buttons_container].width(Length::Fill);
 
         let canvas = Canvas::new(Graph {
             data: LED_DATA.to_vec(),
-            blink_state: self.blink_state,
+            led_state: self.led_state,
             update_frames: self.update_frames.clone(),
             current_frame_index: self.current_frame_index,
         })
         .width(Length::Fill)
         .height(Length::Fill);
 
-        container(column![canvas, content])
+        container(column![canvas, bottom_row].spacing(20))
             .width(Length::Fill)
             .height(Length::Fill)
-            .align_x(alignment::Horizontal::Center)
-            .align_y(alignment::Vertical::Center)
             .padding(20)
             .into()
     }
@@ -240,7 +266,7 @@ impl Application for Race {
 
 struct Graph {
     data: Vec<LedCoordinate>,
-    blink_state: bool,
+    led_state: bool,
     update_frames: Vec<UpdateFrame>,
     current_frame_index: usize,
 }
@@ -302,7 +328,13 @@ impl<Message> Program<Message> for Graph {
     }
 }
 
-async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index: usize, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
+async fn fetch_driver_data(
+    client: Client,
+    driver_numbers: Vec<u32>,
+    start_index: usize,
+    drivers_per_batch: usize,
+    entries_per_driver: usize,
+) -> Result<Vec<UpdateFrame>, String> {
     let session_key = "9149";
     let start_time: &str = "2023-08-27T12:58:56.200";
     let end_time: &str = "2023-08-27T13:20:54.300";
@@ -310,7 +342,9 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
     let mut all_data: Vec<LocationData> = Vec::new();
 
     for chunk_start in (start_index..driver_numbers.len()).step_by(drivers_per_batch) {
-        for driver_number in &driver_numbers[chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)] {
+        for driver_number in &driver_numbers
+            [chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)]
+        {
             let mut fetched_entries = 0;
 
             while fetched_entries < entries_per_driver {
@@ -322,9 +356,16 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
                 let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
                 if resp.status().is_success() {
                     let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
-                    let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
+                    let valid_data: Vec<LocationData> = data
+                        .into_iter()
+                        .filter(|d| d.x != 0.0 && d.y != 0.0)
+                        .collect();
                     fetched_entries += valid_data.len();
-                    eprintln!("Fetched {} entries for driver number {}", valid_data.len(), driver_number);
+                    eprintln!(
+                        "Fetched {} entries for driver number {}",
+                        valid_data.len(),
+                        driver_number
+                    );
                     all_data.extend(valid_data);
                 } else {
                     eprintln!(
@@ -345,7 +386,9 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
     let mut current_frame: Option<UpdateFrame> = None;
 
     for data in all_data {
-        let timestamp = DateTime::parse_from_rfc3339(&data.date).map_err(|e| e.to_string())?.timestamp_millis() as u64;
+        let timestamp = DateTime::parse_from_rfc3339(&data.date)
+            .map_err(|e| e.to_string())?
+            .timestamp_millis() as u64;
         let x = data.x;
         let y = data.y;
         let driver_number = data.driver_number;
@@ -360,7 +403,8 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
 
         let color = driver.color;
 
-        let nearest_led = LED_DATA.iter()
+        let nearest_led = LED_DATA
+            .iter()
             .min_by(|a, b| {
                 let dist_a = ((a.x_led - x).powi(2) + (a.y_led - y).powi(2)).sqrt();
                 let dist_b = ((b.x_led - x).powi(2) + (b.y_led - y).powi(2)).sqrt();
@@ -374,11 +418,17 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
             } else {
                 update_frames.push(frame.clone());
                 current_frame = Some(UpdateFrame::new(timestamp));
-                current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
+                current_frame
+                    .as_mut()
+                    .unwrap()
+                    .set_led_state(nearest_led.led_number, color);
             }
         } else {
             current_frame = Some(UpdateFrame::new(timestamp));
-            current_frame.as_mut().unwrap().set_led_state(nearest_led.led_number, color);
+            current_frame
+                .as_mut()
+                .unwrap()
+                .set_led_state(nearest_led.led_number, color);
         }
     }
 
@@ -389,7 +439,19 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
     Ok(update_frames)
 }
 
-async fn sleep_and_fetch_next(client: Client, driver_numbers: Vec<u32>, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
+async fn sleep_and_fetch_next(
+    client: Client,
+    driver_numbers: Vec<u32>,
+    drivers_per_batch: usize,
+    entries_per_driver: usize,
+) -> Result<Vec<UpdateFrame>, String> {
     sleep(Duration::from_millis(334)).await;
-    fetch_driver_data(client, driver_numbers, 0, drivers_per_batch, entries_per_driver).await
+    fetch_driver_data(
+        client,
+        driver_numbers,
+        0,
+        drivers_per_batch,
+        entries_per_driver,
+    )
+    .await
 }
