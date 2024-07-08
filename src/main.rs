@@ -35,7 +35,8 @@ struct Race {
     state: State,
     update_frame: Option<UpdateFrame>,
     client: Client,
-    driver_numbers: Vec<u32>,
+    driver_index: usize,
+    max_calls: usize,
 }
 
 enum State {
@@ -65,9 +66,8 @@ impl Application for Race {
                 state: State::Idle,
                 update_frame: None,
                 client: Client::new(),
-                driver_numbers: vec![
-                    1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
-                ],
+                driver_index: 0,
+                max_calls: 20,
             },
             Command::none(),
         )
@@ -83,12 +83,12 @@ impl Application for Race {
                 State::Idle => {
                     self.state = State::Fetching;
                     self.update_frame = None;
+                    self.driver_index = 0;
                     return Command::perform(
                         fetch_driver_data(
                             self.client.clone(),
-                            self.driver_numbers.clone(),
-                            3,
-                            20,
+                            self.driver_index,
+                            self.max_calls,
                         ), 
                         Message::DataFetched
                     );
@@ -293,8 +293,7 @@ impl<Message> Program<Message> for Graph {
 
 async fn fetch_driver_data(
     client: Client,
-    driver_numbers: Vec<u32>,
-    drivers_per_batch: usize,
+    driver_index: usize,
     max_calls: usize,
 ) -> Result<UpdateFrame, String> {
     let session_key = "9149";
@@ -302,58 +301,43 @@ async fn fetch_driver_data(
     let mut update_frame = UpdateFrame::new(0);
     let mut call_count = 0;
 
-    for chunk_start in (0..driver_numbers.len()).step_by(drivers_per_batch) {
-        for driver_number in &driver_numbers[chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)] {
-            if call_count >= max_calls {
-                break;
-            }
-            let url = format!(
-                "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
-                session_key, driver_number,
-            );
-            eprintln!("url: {}", url);
-            let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-            if resp.status().is_success() {
-                let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
-                if let Some(location) = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).next() {
-                    eprintln!("Fetched and using data: {:?}", location); // Print debug statement
-
-                    let driver = match DRIVERS.iter().find(|d| d.number == location.driver_number) {
-                        Some(d) => d,
-                        None => {
-                            eprintln!("Driver not found for number: {}", location.driver_number);
-                            continue;
-                        }
-                    };
-
-                    let color = driver.color;
-
-                    let nearest_led = LED_DATA.iter()
-                        .min_by(|a, b| {
-                            let dist_a = ((a.x_led - location.x).powi(2) + (a.y_led - location.y).powi(2)).sqrt();
-                            let dist_b = ((b.x_led - location.x).powi(2) + (b.y_led - location.y).powi(2)).sqrt();
-                            dist_a.partial_cmp(&dist_b).unwrap()
-                        })
-                        .unwrap();
-
-                    update_frame.set_led_state(nearest_led.led_number, color);
-                    call_count += 1;
-
-                    // Break out of the loop after processing one valid LocationData
-                    break;
-                } else {
-                    eprintln!("No valid data found for driver {}", driver_number);
-                }
-            } else {
-                eprintln!(
-                    "Failed to fetch data for driver {}: HTTP {}",
-                    driver_number,
-                    resp.status()
-                );
-            }
-        }
+    for driver in &DRIVERS[driver_index..] {
         if call_count >= max_calls {
             break;
+        }
+
+        let url = format!(
+            "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
+            session_key, driver.number,
+        );
+        eprintln!("url: {}", url);
+        let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
+            if let Some(location) = data.into_iter().find(|d| d.x != 0.0 && d.y != 0.0) {
+                eprintln!("Fetched and using data: {:?}", location); // Print debug statement
+
+                let color = driver.color;
+
+                let nearest_led = LED_DATA.iter()
+                    .min_by(|a, b| {
+                        let dist_a = ((a.x_led - location.x).powi(2) + (a.y_led - location.y).powi(2)).sqrt();
+                        let dist_b = ((b.x_led - location.x).powi(2) + (b.y_led - location.y).powi(2)).sqrt();
+                        dist_a.partial_cmp(&dist_b).unwrap()
+                    })
+                    .unwrap();
+
+                update_frame.set_led_state(nearest_led.led_number, color);
+                call_count += 1;
+            } else {
+                eprintln!("No valid data found for driver {}", driver.number);
+            }
+        } else {
+            eprintln!(
+                "Failed to fetch data for driver {}: HTTP {}",
+                driver.number,
+                resp.status()
+            );
         }
     }
 
