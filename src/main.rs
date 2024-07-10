@@ -28,72 +28,72 @@ struct LocationData {
 }
 
 pub fn main() -> iced::Result {
-    Race::run(Settings::default())
+    RaceSimulation::run(Settings::default())
 }
 
-struct Race {
-    duration: Duration,
-    state: State,
-    led_state: bool,
-    processed_frames: Vec<UpdateFrame>,
-    visualizing_frames: Vec<UpdateFrame>,
-    fetched_frames: Vec<UpdateFrame>,
-    current_frame_index: usize,
-    client: Client,
+struct RaceSimulation {
+    elapsed_time: Duration,
+    state: SimulationState,
+    is_led_on: bool,
+    processed_update_frames: Vec<UpdateFrame>,
+    frames_to_visualize: Vec<UpdateFrame>,
+    fetched_update_frames: Vec<UpdateFrame>,
+    current_visualization_frame_index: usize,
+    http_client: Client,
     driver_numbers: Vec<u32>,
     start_time: DateTime<Utc>,
     end_time: DateTime<Utc>,
-    next_fetch_start_time: DateTime<Utc>,
-    next_fetch_end_time: DateTime<Utc>,
-    app_start_instant: Instant,
+    next_data_fetch_start_time: DateTime<Utc>,
+    next_data_fetch_end_time: DateTime<Utc>,
+    application_start_time: Instant,
 }
 
-enum State {
-    Idle,
-    Fetching,
-    Ticking { last_tick: Instant },
+enum SimulationState {
+    IdleState,
+    FetchingDataState,
+    VisualizingState { last_tick: Instant },
 }
 
 #[derive(Debug, Clone)]
-enum Message {
-    Toggle,
-    Reset,
-    Tick(Instant),
-    LedOn,
-    DataFetched(Result<Vec<UpdateFrame>, String>),
-    FetchNext,
+enum SimulationMessage {
+    ToggleSimulation,
+    ResetSimulation,
+    SimulationTick(Instant),
+    ToggleLed,
+    DriverDataFetched(Result<Vec<UpdateFrame>, String>),
+    FetchNextDataBatch,
 }
 
-impl Application for Race {
-    type Message = Message;
+impl Application for RaceSimulation {
+    type Message = SimulationMessage;
     type Theme = Theme;
     type Executor = executor::Default;
     type Flags = ();
 
-    fn new(_flags: ()) -> (Race, Command<Message>) {
+    fn new(_flags: ()) -> (RaceSimulation, Command<SimulationMessage>) {
         let start_time = DateTime::parse_from_rfc3339("2023-08-27T12:58:56.200Z").unwrap().with_timezone(&Utc);
         let end_time = start_time + ChronoDuration::seconds(60);
-        let next_fetch_start_time = end_time + ChronoDuration::milliseconds(1);
-        let next_fetch_end_time = next_fetch_start_time + ChronoDuration::seconds(60);
+        let next_data_fetch_start_time = end_time + ChronoDuration::milliseconds(1);
+        let next_data_fetch_end_time = next_data_fetch_start_time + ChronoDuration::seconds(60);
 
         (
-            Race {
-                duration: Duration::default(),
-                state: State::Idle,
-                led_state: false,
-                processed_frames: vec![],
-                visualizing_frames: vec![],
-                fetched_frames: vec![],
-                current_frame_index: 0,
-                client: Client::new(),
+            RaceSimulation {
+                elapsed_time: Duration::default(),
+                state: SimulationState::IdleState,
+                is_led_on: false,
+                processed_update_frames: vec![],
+                frames_to_visualize: vec![],
+                fetched_update_frames: vec![],
+                current_visualization_frame_index: 0,
+                http_client: Client::new(),
                 driver_numbers: vec![
                     1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
                 ],
                 start_time,
                 end_time,
-                next_fetch_start_time,
-                next_fetch_end_time,
-                app_start_instant: Instant::now(),
+                next_data_fetch_start_time,
+                next_data_fetch_end_time,
+                application_start_time: Instant::now(),
             },
             Command::none(),
         )
@@ -103,105 +103,105 @@ impl Application for Race {
         String::from("F1-LED-CIRCUIT")
     }
 
-    fn update(&mut self, message: Message) -> Command<Message> {
+    fn update(&mut self, message: SimulationMessage) -> Command<SimulationMessage> {
         match message {
-            Message::Toggle => match self.state {
-                State::Idle => {
-                    println!("[{}] Data fetching started", self.app_start_instant.elapsed().as_secs());
-                    self.state = State::Fetching;
-                    self.processed_frames.clear();
-                    self.visualizing_frames.clear();
-                    self.fetched_frames.clear();
-                    self.current_frame_index = 0;
-                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), self.start_time, self.end_time), Message::DataFetched);
+            SimulationMessage::ToggleSimulation => match self.state {
+                SimulationState::IdleState => {
+                    println!("[{}] Data fetching started", self.application_start_time.elapsed().as_secs());
+                    self.state = SimulationState::FetchingDataState;
+                    self.processed_update_frames.clear();
+                    self.frames_to_visualize.clear();
+                    self.fetched_update_frames.clear();
+                    self.current_visualization_frame_index = 0;
+                    return Command::perform(fetch_and_process_driver_data(self.http_client.clone(), self.driver_numbers.clone(), self.start_time, self.end_time), SimulationMessage::DriverDataFetched);
                 }
-                State::Fetching => {
-                    self.state = State::Idle;
-                    self.led_state = false;
+                SimulationState::FetchingDataState => {
+                    self.state = SimulationState::IdleState;
+                    self.is_led_on = false;
                 }
-                State::Ticking { .. } => {
-                    self.state = State::Idle;
-                    self.led_state = false;
+                SimulationState::VisualizingState { .. } => {
+                    self.state = SimulationState::IdleState;
+                    self.is_led_on = false;
                 }
             },
-            Message::Tick(now) => {
-                if let State::Ticking { last_tick } = &mut self.state {
-                    self.duration += now - *last_tick;
+            SimulationMessage::SimulationTick(now) => {
+                if let SimulationState::VisualizingState { last_tick } = &mut self.state {
+                    self.elapsed_time += now - *last_tick;
                     *last_tick = now;
 
-                    if self.current_frame_index < self.visualizing_frames.len() {
-                        self.current_frame_index = (self.current_frame_index + 1) % self.visualizing_frames.len();
-                        println!("[{}] Visualizing frame index {}", self.app_start_instant.elapsed().as_secs(), self.current_frame_index);
+                    if self.current_visualization_frame_index < self.frames_to_visualize.len() {
+                        self.current_visualization_frame_index = (self.current_visualization_frame_index + 1) % self.frames_to_visualize.len();
+                        println!("[{}] Visualizing frame index {}", self.application_start_time.elapsed().as_secs(), self.current_visualization_frame_index);
                     }
                 }
             }
-            Message::Reset => {
-                self.duration = Duration::default();
-                self.led_state = false;
-                self.current_frame_index = 0;
-                self.processed_frames.clear();
-                self.visualizing_frames.clear();
-                self.fetched_frames.clear();
-                println!("[{}] Resetting all frames", self.app_start_instant.elapsed().as_secs());
+            SimulationMessage::ResetSimulation => {
+                self.elapsed_time = Duration::default();
+                self.is_led_on = false;
+                self.current_visualization_frame_index = 0;
+                self.processed_update_frames.clear();
+                self.frames_to_visualize.clear();
+                self.fetched_update_frames.clear();
+                println!("[{}] Resetting all frames", self.application_start_time.elapsed().as_secs());
             }
-            Message::LedOn => {
-                if !self.visualizing_frames.is_empty() {
-                    self.led_state = !self.led_state;
-                    println!("[{}] Toggling LED state to {}", self.app_start_instant.elapsed().as_secs(), self.led_state);
+            SimulationMessage::ToggleLed => {
+                if !self.frames_to_visualize.is_empty() {
+                    self.is_led_on = !self.is_led_on;
+                    println!("[{}] Toggling LED state to {}", self.application_start_time.elapsed().as_secs(), self.is_led_on);
                 }
             }
-            Message::DataFetched(Ok(new_frames)) => {
-                println!("[{}] Data fetching ended with {} frames", self.app_start_instant.elapsed().as_secs(), new_frames.len());
-                self.fetched_frames.extend(new_frames);
-                self.visualizing_frames.append(&mut self.fetched_frames);
+            SimulationMessage::DriverDataFetched(Ok(new_frames)) => {
+                println!("[{}] Data fetching ended with {} frames", self.application_start_time.elapsed().as_secs(), new_frames.len());
+                self.fetched_update_frames.extend(new_frames);
+                self.frames_to_visualize.append(&mut self.fetched_update_frames);
 
-                if !self.visualizing_frames.is_empty() {
-                    self.state = State::Ticking {
+                if !self.frames_to_visualize.is_empty() {
+                    self.state = SimulationState::VisualizingState {
                         last_tick: Instant::now(),
                     };
-                    println!("[{}] Visualization started with {} frames", self.app_start_instant.elapsed().as_secs(), self.visualizing_frames.len());
-                    return Command::perform(wait_and_fetch_next(self.next_fetch_start_time, self.next_fetch_end_time), |_| Message::FetchNext);
+                    println!("[{}] Visualization started with {} frames", self.application_start_time.elapsed().as_secs(), self.frames_to_visualize.len());
+                    return Command::perform(wait_and_fetch_next_batch(self.next_data_fetch_start_time, self.next_data_fetch_end_time), |_| SimulationMessage::FetchNextDataBatch);
                 } else {
-                    self.state = State::Idle;
+                    self.state = SimulationState::IdleState;
                 }
             }
-            Message::DataFetched(Err(_)) => {
-                println!("[{}] Data fetching failed", self.app_start_instant.elapsed().as_secs());
-                self.state = State::Idle;
+            SimulationMessage::DriverDataFetched(Err(_)) => {
+                println!("[{}] Data fetching failed", self.application_start_time.elapsed().as_secs());
+                self.state = SimulationState::IdleState;
             }
-            Message::FetchNext => {
-                let new_start_time = self.next_fetch_start_time;
-                let new_end_time = self.next_fetch_end_time;
-                self.next_fetch_start_time = new_end_time + ChronoDuration::milliseconds(1);
-                self.next_fetch_end_time = self.next_fetch_start_time + ChronoDuration::seconds(60);
-                println!("[{}] Data fetching started for new time range", self.app_start_instant.elapsed().as_secs());
-                return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), new_start_time, new_end_time), Message::DataFetched);
+            SimulationMessage::FetchNextDataBatch => {
+                let new_start_time = self.next_data_fetch_start_time;
+                let new_end_time = self.next_data_fetch_end_time;
+                self.next_data_fetch_start_time = new_end_time + ChronoDuration::milliseconds(1);
+                self.next_data_fetch_end_time = self.next_data_fetch_start_time + ChronoDuration::seconds(60);
+                println!("[{}] Data fetching started for new time range", self.application_start_time.elapsed().as_secs());
+                return Command::perform(fetch_and_process_driver_data(self.http_client.clone(), self.driver_numbers.clone(), new_start_time, new_end_time), SimulationMessage::DriverDataFetched);
             }
         }
 
         Command::none()
     }
 
-    fn subscription(&self) -> Subscription<Message> {
+    fn subscription(&self) -> Subscription<SimulationMessage> {
         let tick = match self.state {
-            State::Idle | State::Fetching => Subscription::none(),
-            State::Ticking { .. } => {
-                time::every(Duration::from_millis(10)).map(Message::Tick)
+            SimulationState::IdleState | SimulationState::FetchingDataState => Subscription::none(),
+            SimulationState::VisualizingState { .. } => {
+                time::every(Duration::from_millis(10)).map(SimulationMessage::SimulationTick)
             }
         };
 
         let blink = match self.state {
-            State::Idle | State::Fetching => Subscription::none(),
-            State::Ticking { .. } => {
-                time::every(Duration::from_millis(100)).map(|_| Message::LedOn)
+            SimulationState::IdleState | SimulationState::FetchingDataState => Subscription::none(),
+            SimulationState::VisualizingState { .. } => {
+                time::every(Duration::from_millis(100)).map(|_| SimulationMessage::ToggleLed)
             }
         };
 
         Subscription::batch(vec![tick, blink])
     }
 
-    fn view(&self) -> Element<Message> {
-        if let State::Fetching = self.state {
+    fn view(&self) -> Element<SimulationMessage> {
+        if let SimulationState::FetchingDataState = self.state {
             return container(
                 text("DOWNLOADING DATA...")
                     .size(50)
@@ -218,14 +218,14 @@ impl Application for Race {
         const MINUTE: u64 = 60;
         const HOUR: u64 = 60 * MINUTE;
 
-        let seconds = self.duration.as_secs();
+        let seconds = self.elapsed_time.as_secs();
 
         let duration = text(format!(
             "{:0>2}:{:0>2}:{:0>2}.{:0>2}",
             seconds / HOUR,
             (seconds % HOUR) / MINUTE,
             seconds % MINUTE,
-            self.duration.subsec_millis() / 10,
+            self.elapsed_time.subsec_millis() / 10,
         ))
         .size(40);
 
@@ -239,16 +239,16 @@ impl Application for Race {
 
         let toggle_button = {
             let label = match self.state {
-                State::Idle | State::Fetching => "Start",
-                State::Ticking { .. } => "Stop",
+                SimulationState::IdleState | SimulationState::FetchingDataState => "Start",
+                SimulationState::VisualizingState { .. } => "Stop",
             };
 
-            button(label).on_press(Message::Toggle)
+            button(label).on_press(SimulationMessage::ToggleSimulation)
         };
 
         let reset_button = button("Reset")
             .style(theme::Button::Destructive)
-            .on_press(Message::Reset);
+            .on_press(SimulationMessage::ResetSimulation);
 
         let content = row![
             container(duration).padding(10),
@@ -258,11 +258,11 @@ impl Application for Race {
         .align_items(Alignment::Center)
         .spacing(20);
 
-        let canvas = Canvas::new(Graph {
-            data: LED_DATA.to_vec(),
-            led_state: self.led_state,
-            update_frames: self.visualizing_frames.clone(),
-            current_frame_index: self.current_frame_index,
+        let canvas = Canvas::new(LedCircuitGraph {
+            led_coordinates: LED_DATA.to_vec(),
+            is_led_on: self.is_led_on,
+            visualization_frames: self.frames_to_visualize.clone(),
+            current_visualization_frame_index: self.current_visualization_frame_index,
         })
         .width(Length::Fill)
         .height(Length::Fill);
@@ -281,14 +281,14 @@ impl Application for Race {
     }
 }
 
-struct Graph {
-    data: Vec<LedCoordinate>,
-    led_state: bool,
-    update_frames: Vec<UpdateFrame>,
-    current_frame_index: usize,
+struct LedCircuitGraph {
+    led_coordinates: Vec<LedCoordinate>,
+    is_led_on: bool,
+    visualization_frames: Vec<UpdateFrame>,
+    current_visualization_frame_index: usize,
 }
 
-impl<Message> Program<Message> for Graph {
+impl<Message> Program<Message> for LedCircuitGraph {
     type State = ();
 
     fn draw(
@@ -301,7 +301,7 @@ impl<Message> Program<Message> for Graph {
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(_renderer, bounds.size());
 
-        let (min_x, max_x, min_y, max_y) = self.data.iter().fold(
+        let (min_x, max_x, min_y, max_y) = self.led_coordinates.iter().fold(
             (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
             |(min_x, max_x, min_y, max_y), led| {
                 (
@@ -322,10 +322,10 @@ impl<Message> Program<Message> for Graph {
         let scale_y = (bounds.height - 2.0 * padding) / height;
 
         // Draw the LED rectangles
-        if !self.update_frames.is_empty() {
-            let frame_data = &self.update_frames[self.current_frame_index];
+        if !self.visualization_frames.is_empty() {
+            let frame_data = &self.visualization_frames[self.current_visualization_frame_index];
 
-            for led in &self.data {
+            for led in &self.led_coordinates {
                 let x = (led.x_led - min_x) * scale_x + padding;
                 let y = bounds.height - (led.y_led - min_y) * scale_y - padding;
 
@@ -345,7 +345,7 @@ impl<Message> Program<Message> for Graph {
     }
 }
 
-async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Result<Vec<UpdateFrame>, String> {
+async fn fetch_and_process_driver_data(client: Client, driver_numbers: Vec<u32>, start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Result<Vec<UpdateFrame>, String> {
     let session_key = "9149";
 
     let mut all_data: Vec<LocationData> = Vec::new();
@@ -432,7 +432,7 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_time:
     Ok(update_frames)
 }
 
-async fn wait_and_fetch_next(start_time: DateTime<Utc>, end_time: DateTime<Utc>) {
+async fn wait_and_fetch_next_batch(start_time: DateTime<Utc>, end_time: DateTime<Utc>) {
     let visualization_time = Duration::from_secs(45);
     println!("[{}] Waiting for {} seconds before next fetch", Utc::now(), visualization_time.as_secs());
     sleep(visualization_time).await;
