@@ -43,6 +43,7 @@ struct Race {
     end_time: DateTime<Utc>,
     next_fetch_start_time: DateTime<Utc>,
     next_fetch_end_time: DateTime<Utc>,
+    app_start_instant: Instant,
 }
 
 enum State {
@@ -88,6 +89,7 @@ impl Application for Race {
                 end_time,
                 next_fetch_start_time,
                 next_fetch_end_time,
+                app_start_instant: Instant::now(),
             },
             Command::none(),
         )
@@ -101,6 +103,7 @@ impl Application for Race {
         match message {
             Message::Toggle => match self.state {
                 State::Idle => {
+                    println!("[{}] Data fetching started", self.app_start_instant.elapsed().as_secs());
                     self.state = State::Fetching;
                     self.update_frames.clear();
                     self.current_frame_index = 0;
@@ -133,11 +136,13 @@ impl Application for Race {
                 }
             }
             Message::DataFetched(Ok(new_frames)) => {
+                println!("[{}] Data fetching ended", self.app_start_instant.elapsed().as_secs());
                 self.update_frames.extend(new_frames);
                 if !self.update_frames.is_empty() {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
+                    println!("[{}] Visualization started", self.app_start_instant.elapsed().as_secs());
                     return Command::perform(wait_and_fetch_next(self.next_fetch_start_time, self.next_fetch_end_time), |_| Message::FetchNext);
                 } else {
                     self.state = State::Idle;
@@ -334,7 +339,7 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_time:
                 "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
                 session_key, driver_number, start_time.to_rfc3339(), end_time.to_rfc3339(),
             );
-            eprintln!("url: {}", url);
+            //eprintln!("url: {}", url);
             let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
             if resp.status().is_success() {
                 let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
