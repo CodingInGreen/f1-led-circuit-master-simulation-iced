@@ -41,6 +41,8 @@ struct Race {
     driver_numbers: Vec<u32>,
     start_time: DateTime<Utc>,
     end_time: DateTime<Utc>,
+    next_fetch_start_time: DateTime<Utc>,
+    next_fetch_end_time: DateTime<Utc>,
 }
 
 enum State {
@@ -67,7 +69,9 @@ impl Application for Race {
 
     fn new(_flags: ()) -> (Race, Command<Message>) {
         let start_time = DateTime::parse_from_rfc3339("2023-08-27T12:58:56.200Z").unwrap().with_timezone(&Utc);
-        let end_time = start_time + ChronoDuration::seconds(15);
+        let end_time = start_time + ChronoDuration::seconds(60);
+        let next_fetch_start_time = end_time + ChronoDuration::milliseconds(1);
+        let next_fetch_end_time = next_fetch_start_time + ChronoDuration::seconds(60);
 
         (
             Race {
@@ -82,6 +86,8 @@ impl Application for Race {
                 ],
                 start_time,
                 end_time,
+                next_fetch_start_time,
+                next_fetch_end_time,
             },
             Command::none(),
         )
@@ -132,7 +138,7 @@ impl Application for Race {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
-                    return Command::perform(wait_and_fetch_next(self.start_time, self.end_time), |_| Message::FetchNext);
+                    return Command::perform(wait_and_fetch_next(self.next_fetch_start_time, self.next_fetch_end_time), |_| Message::FetchNext);
                 } else {
                     self.state = State::Idle;
                 }
@@ -141,11 +147,11 @@ impl Application for Race {
                 self.state = State::Idle;
             }
             Message::FetchNext => {
-                let new_start_time = self.start_time + ChronoDuration::milliseconds(1);
-                let new_end_time = new_start_time + ChronoDuration::seconds(15);
-                self.start_time = new_start_time;
-                self.end_time = new_end_time;
-                return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), self.start_time, self.end_time), Message::DataFetched);
+                let new_start_time = self.next_fetch_start_time;
+                let new_end_time = self.next_fetch_end_time;
+                self.next_fetch_start_time = new_end_time + ChronoDuration::milliseconds(1);
+                self.next_fetch_end_time = self.next_fetch_start_time + ChronoDuration::seconds(60);
+                return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), new_start_time, new_end_time), Message::DataFetched);
             }
         }
 
@@ -349,7 +355,7 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_time:
     // Sort the data by the date field
     all_data.sort_by_key(|d| d.date.clone());
 
-    let mut update_frames = Vec::new();
+    let mut update_frames = Vec::<UpdateFrame>::new();
     let mut current_frame: Option<UpdateFrame> = None;
 
     for data in all_data {
@@ -398,6 +404,6 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_time:
 }
 
 async fn wait_and_fetch_next(start_time: DateTime<Utc>, end_time: DateTime<Utc>) {
-    let elapsed_time = (end_time - start_time).num_milliseconds();
-    sleep(Duration::from_millis(elapsed_time as u64 / 3)).await;
+    let visualization_time = Duration::from_secs(45);
+    sleep(visualization_time).await;
 }
