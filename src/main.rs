@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use led_data::{LedCoordinate, LED_DATA, UpdateFrame};
 use driver_info::DRIVERS;
 use std::f32;
-use chrono::DateTime;
+use chrono::{DateTime, Utc, Duration as ChronoDuration};
+use tokio::time::sleep;
 
 #[derive(Debug, Deserialize)]
 struct LocationData {
@@ -38,6 +39,8 @@ struct Race {
     current_frame_index: usize,
     client: Client,
     driver_numbers: Vec<u32>,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
 }
 
 enum State {
@@ -53,6 +56,7 @@ enum Message {
     Tick(Instant),
     LedOn,
     DataFetched(Result<Vec<UpdateFrame>, String>),
+    FetchNext,
 }
 
 impl Application for Race {
@@ -62,6 +66,9 @@ impl Application for Race {
     type Flags = ();
 
     fn new(_flags: ()) -> (Race, Command<Message>) {
+        let start_time = DateTime::parse_from_rfc3339("2023-08-27T12:58:56.200Z").unwrap().with_timezone(&Utc);
+        let end_time = start_time + ChronoDuration::seconds(15);
+
         (
             Race {
                 duration: Duration::default(),
@@ -73,6 +80,8 @@ impl Application for Race {
                 driver_numbers: vec![
                     1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
                 ],
+                start_time,
+                end_time,
             },
             Command::none(),
         )
@@ -89,7 +98,7 @@ impl Application for Race {
                     self.state = State::Fetching;
                     self.update_frames.clear();
                     self.current_frame_index = 0;
-                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), 0, 3, 120), Message::DataFetched);
+                    return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), self.start_time, self.end_time), Message::DataFetched);
                 }
                 State::Fetching => {
                     self.state = State::Idle;
@@ -123,12 +132,20 @@ impl Application for Race {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
+                    return Command::perform(wait_and_fetch_next(self.start_time, self.end_time), |_| Message::FetchNext);
                 } else {
                     self.state = State::Idle;
                 }
             }
             Message::DataFetched(Err(_)) => {
                 self.state = State::Idle;
+            }
+            Message::FetchNext => {
+                let new_start_time = self.start_time + ChronoDuration::milliseconds(1);
+                let new_end_time = new_start_time + ChronoDuration::seconds(15);
+                self.start_time = new_start_time;
+                self.end_time = new_end_time;
+                return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), self.start_time, self.end_time), Message::DataFetched);
             }
         }
 
@@ -298,37 +315,33 @@ impl<Message> Program<Message> for Graph {
     }
 }
 
-async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index: usize, drivers_per_batch: usize, entries_per_driver: usize) -> Result<Vec<UpdateFrame>, String> {
+async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Result<Vec<UpdateFrame>, String> {
     let session_key = "9149";
-    let start_time: &str = "2023-08-27T12:58:56.200";
-    let end_time: &str = "2023-08-27T13:20:54.300";
 
     let mut all_data: Vec<LocationData> = Vec::new();
 
-    for chunk_start in (start_index..driver_numbers.len()).step_by(drivers_per_batch) {
-        for driver_number in &driver_numbers[chunk_start..chunk_start + drivers_per_batch.min(driver_numbers.len() - chunk_start)] {
-            let mut fetched_entries = 0;
+    for driver_number in driver_numbers {
+        let mut fetched_entries = 0;
 
-            while fetched_entries < entries_per_driver {
-                let url = format!(
-                    "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
-                    session_key, driver_number, start_time, end_time,
+        while fetched_entries < 20 {
+            let url = format!(
+                "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
+                session_key, driver_number, start_time.to_rfc3339(), end_time.to_rfc3339(),
+            );
+            eprintln!("url: {}", url);
+            let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
+                let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
+                fetched_entries += valid_data.len();
+                all_data.extend(valid_data);
+            } else {
+                eprintln!(
+                    "Failed to fetch data for driver {}: HTTP {}",
+                    driver_number,
+                    resp.status()
                 );
-                eprintln!("url: {}", url);
-                let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-                if resp.status().is_success() {
-                    let data: Vec<LocationData> = resp.json().await.map_err(|e| e.to_string())?;
-                    let valid_data: Vec<LocationData> = data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0).collect();
-                    fetched_entries += valid_data.len();
-                    all_data.extend(valid_data);
-                } else {
-                    eprintln!(
-                        "Failed to fetch data for driver {}: HTTP {}",
-                        driver_number,
-                        resp.status()
-                    );
-                    break;
-                }
+                break;
             }
         }
     }
@@ -382,4 +395,9 @@ async fn fetch_driver_data(client: Client, driver_numbers: Vec<u32>, start_index
     }
 
     Ok(update_frames)
+}
+
+async fn wait_and_fetch_next(start_time: DateTime<Utc>, end_time: DateTime<Utc>) {
+    let elapsed_time = (end_time - start_time).num_milliseconds();
+    sleep(Duration::from_millis(elapsed_time as u64 / 3)).await;
 }
