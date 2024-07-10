@@ -35,7 +35,9 @@ struct Race {
     duration: Duration,
     state: State,
     led_state: bool,
-    update_frames: Vec<UpdateFrame>,
+    processed_frames: Vec<UpdateFrame>,
+    visualizing_frames: Vec<UpdateFrame>,
+    fetched_frames: Vec<UpdateFrame>,
     current_frame_index: usize,
     client: Client,
     driver_numbers: Vec<u32>,
@@ -79,7 +81,9 @@ impl Application for Race {
                 duration: Duration::default(),
                 state: State::Idle,
                 led_state: false,
-                update_frames: vec![],
+                processed_frames: vec![],
+                visualizing_frames: vec![],
+                fetched_frames: vec![],
                 current_frame_index: 0,
                 client: Client::new(),
                 driver_numbers: vec![
@@ -105,7 +109,9 @@ impl Application for Race {
                 State::Idle => {
                     println!("[{}] Data fetching started", self.app_start_instant.elapsed().as_secs());
                     self.state = State::Fetching;
-                    self.update_frames.clear();
+                    self.processed_frames.clear();
+                    self.visualizing_frames.clear();
+                    self.fetched_frames.clear();
                     self.current_frame_index = 0;
                     return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), self.start_time, self.end_time), Message::DataFetched);
                 }
@@ -122,23 +128,31 @@ impl Application for Race {
                 if let State::Ticking { last_tick } = &mut self.state {
                     self.duration += now - *last_tick;
                     *last_tick = now;
+
+                    if self.current_frame_index < self.visualizing_frames.len() {
+                        self.current_frame_index = (self.current_frame_index + 1) % self.visualizing_frames.len();
+                    }
                 }
             }
             Message::Reset => {
                 self.duration = Duration::default();
                 self.led_state = false;
                 self.current_frame_index = 0;
+                self.processed_frames.clear();
+                self.visualizing_frames.clear();
+                self.fetched_frames.clear();
             }
             Message::LedOn => {
-                if !self.update_frames.is_empty() {
+                if !self.visualizing_frames.is_empty() {
                     self.led_state = !self.led_state;
-                    self.current_frame_index = (self.current_frame_index + 1) % self.update_frames.len();
                 }
             }
             Message::DataFetched(Ok(new_frames)) => {
                 println!("[{}] Data fetching ended", self.app_start_instant.elapsed().as_secs());
-                self.update_frames.extend(new_frames);
-                if !self.update_frames.is_empty() {
+                self.fetched_frames.extend(new_frames);
+                self.visualizing_frames.append(&mut self.fetched_frames);
+
+                if !self.visualizing_frames.is_empty() {
                     self.state = State::Ticking {
                         last_tick: Instant::now(),
                     };
@@ -156,6 +170,7 @@ impl Application for Race {
                 let new_end_time = self.next_fetch_end_time;
                 self.next_fetch_start_time = new_end_time + ChronoDuration::milliseconds(1);
                 self.next_fetch_end_time = self.next_fetch_start_time + ChronoDuration::seconds(60);
+                println!("[{}] Data fetching started", self.app_start_instant.elapsed().as_secs());
                 return Command::perform(fetch_driver_data(self.client.clone(), self.driver_numbers.clone(), new_start_time, new_end_time), Message::DataFetched);
             }
         }
@@ -242,7 +257,7 @@ impl Application for Race {
         let canvas = Canvas::new(Graph {
             data: LED_DATA.to_vec(),
             led_state: self.led_state,
-            update_frames: self.update_frames.clone(),
+            update_frames: self.visualizing_frames.clone(),
             current_frame_index: self.current_frame_index,
         })
         .width(Length::Fill)
