@@ -72,9 +72,9 @@ impl Application for RaceSimulation {
 
     fn new(_flags: ()) -> (RaceSimulation, Command<SimulationMessage>) {
         let start_time = DateTime::parse_from_rfc3339("2023-08-27T12:58:56.200Z").unwrap().with_timezone(&Utc);
-        let end_time = start_time + ChronoDuration::minutes(5);
+        let end_time = start_time + ChronoDuration::minutes(5); // Fetch 5 minutes of data
         let next_data_fetch_start_time = end_time + ChronoDuration::milliseconds(1);
-        let next_data_fetch_end_time = next_data_fetch_start_time + ChronoDuration::seconds(60);
+        let next_data_fetch_end_time = next_data_fetch_start_time + ChronoDuration::minutes(5);
 
         (
             RaceSimulation {
@@ -110,7 +110,6 @@ impl Application for RaceSimulation {
                     println!("[{}] Data fetching started", self.application_start_time.elapsed().as_secs());
                     self.state = SimulationState::FetchingDataState;
                     self.processed_update_frames.clear();
-                    self.frames_to_visualize.clear();
                     self.fetched_update_frames.clear();
                     self.current_visualization_frame_index = 0;
                     return Command::perform(fetch_and_process_driver_data(self.http_client.clone(), self.driver_numbers.clone(), self.start_time, self.end_time), SimulationMessage::DriverDataFetched);
@@ -130,8 +129,10 @@ impl Application for RaceSimulation {
                     *last_tick = now;
 
                     if self.current_visualization_frame_index < self.frames_to_visualize.len() {
-                        self.current_visualization_frame_index = (self.current_visualization_frame_index + 1) % self.frames_to_visualize.len();
+                        self.current_visualization_frame_index += 1;
                         println!("[{}] Visualizing frame index {}", self.application_start_time.elapsed().as_secs(), self.current_visualization_frame_index);
+                    } else {
+                        self.current_visualization_frame_index = 0; // Restart visualization if we reach the end
                     }
                 }
             }
@@ -153,16 +154,11 @@ impl Application for RaceSimulation {
             SimulationMessage::DriverDataFetched(Ok(new_frames)) => {
                 println!("[{}] Data fetching ended with {} frames", self.application_start_time.elapsed().as_secs(), new_frames.len());
                 
-                // Clear frames_to_visualize before appending new data
-                self.frames_to_visualize.clear();
-                
+                // Append new data to frames_to_visualize without clearing
                 self.fetched_update_frames.extend(new_frames);
                 self.frames_to_visualize.append(&mut self.fetched_update_frames);
                 self.fetched_update_frames.clear();
                 
-                // Reset current_visualization_frame_index after clearing and before appending new frames
-                self.current_visualization_frame_index = 0;
-            
                 if !self.frames_to_visualize.is_empty() {
                     self.state = SimulationState::VisualizingState {
                         last_tick: Instant::now(),
@@ -173,8 +169,6 @@ impl Application for RaceSimulation {
                     self.state = SimulationState::IdleState;
                 }
             }
-                    
-            
             SimulationMessage::DriverDataFetched(Err(_)) => {
                 println!("[{}] Data fetching failed", self.application_start_time.elapsed().as_secs());
                 self.state = SimulationState::IdleState;
@@ -183,7 +177,7 @@ impl Application for RaceSimulation {
                 let new_start_time = self.next_data_fetch_start_time;
                 let new_end_time = self.next_data_fetch_end_time;
                 self.next_data_fetch_start_time = new_end_time + ChronoDuration::milliseconds(1);
-                self.next_data_fetch_end_time = self.next_data_fetch_start_time + ChronoDuration::seconds(60);
+                self.next_data_fetch_end_time = self.next_data_fetch_start_time + ChronoDuration::minutes(5);
                 println!("[{}] Data fetching started for new time range", self.application_start_time.elapsed().as_secs());
                 return Command::perform(fetch_and_process_driver_data(self.http_client.clone(), self.driver_numbers.clone(), new_start_time, new_end_time), SimulationMessage::DriverDataFetched);
             }
