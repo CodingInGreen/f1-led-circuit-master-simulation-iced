@@ -72,7 +72,7 @@ impl Application for RaceSimulation {
 
     fn new(_flags: ()) -> (RaceSimulation, Command<SimulationMessage>) {
         let start_time = DateTime::parse_from_rfc3339("2023-08-27T12:58:56.200Z").unwrap().with_timezone(&Utc);
-        let end_time = start_time + ChronoDuration::seconds(60);
+        let end_time = start_time + ChronoDuration::minutes(5);
         let next_data_fetch_start_time = end_time + ChronoDuration::milliseconds(1);
         let next_data_fetch_end_time = next_data_fetch_start_time + ChronoDuration::seconds(60);
 
@@ -152,9 +152,17 @@ impl Application for RaceSimulation {
             }
             SimulationMessage::DriverDataFetched(Ok(new_frames)) => {
                 println!("[{}] Data fetching ended with {} frames", self.application_start_time.elapsed().as_secs(), new_frames.len());
+                
+                // Clear frames_to_visualize before appending new data
+                self.frames_to_visualize.clear();
+                
                 self.fetched_update_frames.extend(new_frames);
                 self.frames_to_visualize.append(&mut self.fetched_update_frames);
-
+                self.fetched_update_frames.clear();
+                
+                // Reset current_visualization_frame_index after clearing and before appending new frames
+                self.current_visualization_frame_index = 0;
+            
                 if !self.frames_to_visualize.is_empty() {
                     self.state = SimulationState::VisualizingState {
                         last_tick: Instant::now(),
@@ -165,6 +173,8 @@ impl Application for RaceSimulation {
                     self.state = SimulationState::IdleState;
                 }
             }
+                    
+            
             SimulationMessage::DriverDataFetched(Err(_)) => {
                 println!("[{}] Data fetching failed", self.application_start_time.elapsed().as_secs());
                 self.state = SimulationState::IdleState;
@@ -186,7 +196,7 @@ impl Application for RaceSimulation {
         let tick = match self.state {
             SimulationState::IdleState | SimulationState::FetchingDataState => Subscription::none(),
             SimulationState::VisualizingState { .. } => {
-                time::every(Duration::from_millis(10)).map(SimulationMessage::SimulationTick)
+                time::every(Duration::from_millis(100)).map(SimulationMessage::SimulationTick)
             }
         };
 
@@ -433,7 +443,7 @@ async fn fetch_and_process_driver_data(client: Client, driver_numbers: Vec<u32>,
 }
 
 async fn wait_and_fetch_next_batch(start_time: DateTime<Utc>, end_time: DateTime<Utc>) {
-    let visualization_time = Duration::from_secs(45);
+    let visualization_time = Duration::from_secs(60);
     println!("[{}] Waiting for {} seconds before next fetch", Utc::now(), visualization_time.as_secs());
     sleep(visualization_time).await;
 }
